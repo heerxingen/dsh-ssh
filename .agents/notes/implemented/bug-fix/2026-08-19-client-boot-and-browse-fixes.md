@@ -9,6 +9,7 @@ Status: implemented
 - **known_hosts 缺省 path fallback(A.11)**:保存的主机配置无 knownHostsPath 时,`_readKnownHosts` 缺省不读任何文件 → 真实 host key 判 unknown → ssh2 报「Host denied (verification failed)」。修:`_readKnownHosts` 缺省读 `~/.ssh/known_hosts`(os.homedir),ENOENT→[]视为无记录;支持 OpenSSH hashed 条目 `|1|<salt>|<hash>`(HMAC-SHA1);`_connectInner` error handler 用 verifyHostKey 的 stage/message 覆盖 ssh2 库内文案(unknown/mismatch 分类保真)。
 - **网关 {ok,value} 未解包(A.13)**:core 网关统一把 host 方法返回值包装成 `{ok:true,value}`/`{ok:false,error}`;client startBrowse 把对象当裸字符串,resolve 成功但形状不符就走错误分支。修:lib/typert-contribution.js 增 `unwrapRemoteResponse`/`remoteResponseError` 纯函数,client 内联同签名副本;startBrowse 先解包再判定,业务失败优先透出真实 error.message;新增 test/remote-wire.test.js。
 - **本地 tab browse 能力缺失(A.12/A.14)**:dsh-ssh-dev 两 profile 的 composed picker 实际都只 serve native(win32 决议 native);报错只因插件 DirectoryFlowCombined 本地 tab 直接调 `ctx.workspaces.listDirectory`,而 host.listDirectory 强制要求 browse 能力。修 = 方案 B:本地 tab 探测到 browse 缺失后回退官方原生系统对话框(`ctx.workspaces.pickDirectory`,与 web 行为一致);`isBrowseCapabilityError` 命中条件 = rpcError.code==='directory-picker-unavailable' 或文案含「needs the browse capability」;回退态只渲染提示 + 再次选择 + 取消,不渲染列表与「新建文件夹」。全局可移植(host 决议 native 或 browse 都成立)。
+- **目录三件套的服务面迁移**:DSH 把 `listDirectory`/`createDirectory`/`pickDirectory` 从 Workspace Controller 客户端面(`ctx.workspaces`,现仅 `create`/`rename`/`delete`/`list`,`dsh-api-workspace-controller/lib/client.js`)迁到 `uiWorkspace` 服务(`dsh-client-ui-workspace/lib/client.js` UiWorkspaceService,官方 `dsh-client-ui-directory-picker-browse` 即调 `ctx.uiWorkspace.listDirectory`);旧写法在 0.1.2-rc.1 起直接 `TypeError: ctx.workspaces.listDirectory is not a function`,本机 tab 无法列目录(远端 tab 不走该路径,不受影响)。修 = `localDirectoryFace()` 用 `ctx.get()`(cordis 免 inject 的服务读取)按 `uiWorkspace` → `workspaces` 顺序取第一个带 `listDirectory` 的面,三件套经 `localCall()` 转发;服务未挂载时报可读错误而非 `is not a function`;fiber `inject` 去掉 `workspaces`(已不需要,且该面缺失时不应连累插件加载)。新增 test/client-directory-face.test.js(client.js 在桩化 window/document/react 下真跑,覆盖 uiWorkspace / 旧 workspaces / 无服务三条路径),scripts/client-selfcheck.mjs 的断言同步更新。
 
 ## Alternatives considered
 - 本地 tab browse 修复的方案 A(profile patch pin browse):改变 host 交互模型(系统对话框换自绘浏览树),换 linux 主机决议又变,行为不一致 → 不采用。
@@ -17,7 +18,9 @@ Status: implemented
 - 设置页「当前设置不可写(只读)」误显示与 remote.ssh 报错同根因(load 抛代理错误→writable 停留 false),修复后一起消失。
 - known_hosts 全面支持 hashed;mismatch 仍硬拒绝(v1 无「仍然信任」覆盖,见 TOFU note)。
 - 真机验证依赖 GUI 重启(unified)。
+- 本机工作区目录选择在 DSH 0.1.2-rc.1 起恢复可用;列表结构(`{path, home, crumbs, entries, truncated}`)与插件期望一致,渲染无需改动。
 
 ## 出处
 - archived/a-series-log.md A.10(remote.ssh inject)、A.11(known_hosts fallback)、A.13(resolveRemoteHome 解包)、A.12/A.14(local tab browse 回退)。
 - dsh-api-gateway@lib/index.js:123-131/3174-3204、lib/client.js:258-265/350-352;dsh-client-runtime/lib/client.js pickDirectory/listDirectory;cordis/lib/index.js inject;ssh-core.js _readKnownHosts/parseKnownHosts;本仓库 client.js、lib/typert-contribution.js。
+- 目录三件套迁移:dsh-client-ui-workspace/lib/client.js(UiWorkspaceService)、dsh-api-workspace-controller/lib/client.js(WorkspaceController)、dsh-client-ui-directory-picker-browse/lib/client.js:1022-1026(官方注入面)、cordis/lib/index.js:762-764(reflect.get 免 inject 读取)、dsh-api-workspace-controller/lib/typert.remote-client.js(listing 结构);本仓库 packages/dsh-ssh/client.js、test/client-directory-face.test.js、scripts/client-selfcheck.mjs。

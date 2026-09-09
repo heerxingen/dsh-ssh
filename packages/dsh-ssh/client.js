@@ -429,7 +429,7 @@ window.__ModuleLoader__.load({
     // "native", listDirectory/createDirectory return directory-picker-unavailable which
     // the client wraps as DirectoryBrowseError (the rpcError carries the business code;
     // dsh-host-apiproxy/lib/index.js:3174-3204). On hit the local tab falls back to the
-    // official native system dialog (ctx.workspaces.pickDirectory). Keep in sync with the
+    // official native system dialog (uiWorkspace.pickDirectory). Keep in sync with the
     // canonical copy in lib/typert-contribution.js.
     function isBrowseCapabilityError(err) {
       if (!err || typeof err !== 'object') return false;
@@ -1291,10 +1291,11 @@ window.__ModuleLoader__.load({
     // priority; lowest renders — dsh-client-ui-slots/lib/index.js:68-73,122).
     // One dialog, two tabs:
     //   local    — simplified local directory browser over the official wire
-    //              face ctx.workspaces.listDirectory/createDirectory
-    //              (dsh-client-runtime/lib/client.js:9956-9988). Entries are the
-    //              host-side DIRECTORY children, name-sorted, so no client-side
-    //              sort; showHidden is deliberately omitted (simplification).
+    //              face uiWorkspace.listDirectory/createDirectory
+    //              (dsh-client-ui-workspace/lib/client.js UiWorkspaceService).
+    //              Entries are the host-side DIRECTORY children, name-sorted, so
+    //              no client-side sort; showHidden is deliberately omitted
+    //              (simplification).
     //   remote   — the remote directory-flow logic (pick host → browse →
     //              createPlaceholder → onPicked(localPath)).
     // Outcome contract: each open reports exactly ONE result. The combined
@@ -1345,7 +1346,7 @@ window.__ModuleLoader__.load({
       var setDraft = draftState[1];
       var scanRef = React.useRef(null);
       // Native fallback: when the host has no browse capability, the local tab
-      // switches to the system dialog (ctx.workspaces.pickDirectory). nativeModeRef
+      // switches to the system dialog (uiWorkspace.pickDirectory). nativeModeRef
       // is owned by the parent and remembered across tab switches / remounts so
       // that listDirectory is not retried repeatedly.
       var nativeModeState = React.useState(false);
@@ -2572,7 +2573,10 @@ window.__ModuleLoader__.load({
     }
 
     // ---------- registration ----------
-    var inject = ["slots", "workspaces", "locale", "remote"];
+    // "workspaces" (the Workspace Controller client face) is deliberately absent:
+    // the local directory trio is resolved from whichever face provides it at call
+    // time (localCall below), so the plugin still loads where only one face exists.
+    var inject = ["slots", "locale", "remote"];
 
     function apply(ctx) {
       ctx.effect(function () {
@@ -2690,8 +2694,11 @@ window.__ModuleLoader__.load({
       // dsh-client-ui-directory-picker-browse/lib/client.js:1026-1035).
       // remoteCall guards a not-yet-mounted ctx.remote.ssh (the $mount above is
       // async) by rejecting instead of throwing synchronously. The local tab's
-      // listDirectory/createDirectory ride the official client cable service
-      // ctx.workspaces (dsh-client-runtime/lib/client.js:9956-9988).
+      // listDirectory/createDirectory/pickDirectory ride the uiWorkspace client
+      // service (dsh-client-ui-workspace/lib/client.js UiWorkspaceService), which
+      // is where the directory trio lives now; the Workspace Controller face
+      // ctx.workspaces carries only create/rename/delete/list
+      // (dsh-api-workspace-controller/lib/client.js WorkspaceController).
       var remoteCall = function (name) {
         return function () {
           var args = Array.prototype.slice.call(arguments);
@@ -2702,6 +2709,28 @@ window.__ModuleLoader__.load({
           return ssh[name].apply(ssh, args);
         };
       };
+      // Resolve the local directory face by name at call time through ctx.get (the
+      // inject-free service read, cordis reflect.get) so both faces keep working
+      // across DSH builds, and a provider that is not mounted yet reports a
+      // readable error instead of "<face>.<method> is not a function".
+      var localDirectoryFace = function () {
+        var names = ['uiWorkspace', 'workspaces'];
+        for (var i = 0; i < names.length; i += 1) {
+          var service = ctx.get(names[i]);
+          if (service && typeof service.listDirectory === 'function') return service;
+        }
+        return null;
+      };
+      var localCall = function (name) {
+        return function () {
+          var args = Array.prototype.slice.call(arguments);
+          var face = localDirectoryFace();
+          if (!face || typeof face[name] !== 'function') {
+            return Promise.reject(new Error('workspace directory service unavailable: uiWorkspace.' + name + ' is not mounted'));
+          }
+          return face[name].apply(face, args);
+        };
+      };
       var injectedFlow = function () {
         return {
           listHosts: remoteCall('listHosts'),
@@ -2709,12 +2738,12 @@ window.__ModuleLoader__.load({
           resolveRemoteHome: remoteCall('resolveRemoteHome'),
           createPlaceholder: remoteCall('createPlaceholder'),
           trustHostKey: remoteCall('trustHostKey'),
-          listDirectory: function (path, signal) { return ctx.workspaces.listDirectory(path, signal); },
-          createDirectory: function (path, name) { return ctx.workspaces.createDirectory(path, name); },
+          listDirectory: localCall('listDirectory'),
+          createDirectory: localCall('createDirectory'),
           // Native fallback: when the host has no browse capability, pop the system
-          // dialog via the official native picker (dsh-client-runtime/lib/client.js:
-          // 9954-9958, the same path the official native picker uses).
-          pickDirectory: function () { return ctx.workspaces.pickDirectory(); },
+          // dialog via the official native picker (the same path the official native
+          // picker uses: it resolves the trio through uiWorkspace.pickDirectory).
+          pickDirectory: localCall('pickDirectory'),
           t: ctx.locale.bind("workspace.ssh"),
         };
       };
