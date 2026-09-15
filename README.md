@@ -79,7 +79,7 @@ dsh plugin --profile web add @dsh-ssh/dsh-ssh
 | Windows 远端 | 不支持（仅 Linux / macOS） |
 | Preset | 任意 preset 均可，含 standard；与 preset 无关 |
 
-> **版本要求**：Node ≥ 22 · pnpm 11.21.0 · DSH peerDependencies（`@deepseek-ai/cordis@^4.0.1`、`@deepseek-ai/dsh-*@^0.1.0-rc.6`、`@deepseek-ai/schemastery@^3.18.1`，详见 `packages/dsh-ssh/package.json`）
+> **版本要求**：Node ≥ 22 · pnpm 11.21.0 · DSH peerDependencies（`@deepseek-ai/cordis@^4.0.1`、`@deepseek-ai/dsh-*@^0.1.5-rc.2`、`@deepseek-ai/schemastery@^3.18.1`，详见 `packages/dsh-ssh/package.json`）
 
 ## 已知限制
 

@@ -79,7 +79,7 @@ In a remote workspace, only the seven routed tools execute on the remote host:
 | Windows remote | Not supported (Linux / macOS only) |
 | Preset | Any preset, including the standard one — independent of presets |
 
-> **Requirements**: Node ≥ 22 · pnpm 11.21.0 · DSH peerDependencies (`@deepseek-ai/cordis@^4.0.1`, `@deepseek-ai/dsh-*@^0.1.0-rc.6`, `@deepseek-ai/schemastery@^3.18.1` — see `packages/dsh-ssh/package.json`)
+> **Requirements**: Node ≥ 22 · pnpm 11.21.0 · DSH peerDependencies (`@deepseek-ai/cordis@^4.0.1`, `@deepseek-ai/dsh-*@^0.1.5-rc.2`, `@deepseek-ai/schemastery@^3.18.1` — see `packages/dsh-ssh/package.json`)
 
 ## Known limitations
 
