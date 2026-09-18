@@ -1,20 +1,22 @@
 // @dsh-ssh/dsh-ssh — settings namespace for SSH hosts.
 // Registers the dsh-ssh-hosts namespace (dict of HostConfig, keyed by host id)
-// via the official dsh-settings API: settingsNamespace + ctx.settings.register(...).
+// via the official dsh-settings API: ctx.settings.register(ns, schema, options).
+// The namespace is a plain string: SettingsNamespace is a type-only brand, and
+// the /^[a-z][a-z0-9-]*$/ rule is a type-level constraint on register() rather
+// than a runtime helper.
 // hosts is a DICT (not an array) so the official settings merge preserves stored
 // secrets when a form leaves the write-only password blank — mergeLayers merges
 // plain objects recursively but replaces arrays wholesale
 // (dsh-settings/lib/index.js:235).
 import z from '@deepseek-ai/schemastery';
-import { settingsNamespace } from '@deepseek-ai/dsh-settings';
 
-// settingsNamespace enforces /^[a-z][a-z0-9-]*$/ (no dots) — hence kebab-case dsh-ssh-hosts
-export const HOSTS_NAMESPACE = settingsNamespace('dsh-ssh-hosts');
+// Kebab-case (no dots) per the namespace character rule — hence dsh-ssh-hosts
+export const HOSTS_NAMESPACE = 'dsh-ssh-hosts';
 
 // Legacy namespace (previously dssh-hosts): read-only fallback source. The read
 // side falls back to it only when dsh-ssh-hosts is empty; the write side only
 // writes dsh-ssh-hosts (see readHostsDoc and SshRemoteService saveHost/deleteHost).
-export const LEGACY_HOSTS_NAMESPACE = settingsNamespace('dssh-hosts');
+export const LEGACY_HOSTS_NAMESPACE = 'dssh-hosts';
 
 // HostConfig — one SSH target. Mirrors the ssh-core HostConfig shape.
 export const HostConfigSchema = z.object({
