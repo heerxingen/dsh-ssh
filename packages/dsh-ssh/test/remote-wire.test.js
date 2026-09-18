@@ -27,9 +27,9 @@ test('remoteResponseError prefers the wire error message, falls back otherwise',
 });
 
 // Directory browse capability detection: when host picker only serves "native",
-// ctx.workspaces.listDirectory/createDirectory throws DirectoryBrowseError (rpcError with
+// ctx.uiWorkspace.listDirectory/createDirectory throws DirectoryBrowseError (rpcError with
 // directory-picker-unavailable containing "needs the browse capability");
-// on match, fallback is ctx.workspaces.pickDirectory() system dialog instead of listDirectory.
+// on match, fallback is ctx.uiWorkspace.pickDirectory() system dialog instead of listDirectory.
 test('isBrowseCapabilityError: DirectoryBrowseError shape (rpcError + message)', () => {
   const browseErr = {
     name: 'DirectoryBrowseError',

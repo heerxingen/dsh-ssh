@@ -270,7 +270,7 @@ export function remoteResponseError(response, fallback) {
  *     message: 'host.listDirectory needs the browse capability; the composed picker serves "native"',
  *     details: { capability: "native" } }
  * (dsh-host-apiproxy/lib/index.js:3174-3204); the client-side
- * ctx.workspaces.listDirectory/createDirectory wrap them as DirectoryBrowseError
+ * ctx.uiWorkspace.listDirectory/createDirectory wrap them as DirectoryBrowseError
  * (err.rpcError carries that business code, err.message is prefixed
  * "directory browse failed:"). Matches the business code or the host message
  * "needs the browse capability" — the trigger for the native-dialog fallback.
