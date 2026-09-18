@@ -274,7 +274,7 @@ function makeCtx({ hosts = {}, sshPool, officialTools = {} } = {}) {
     fs: { sandboxMode: undefined },
     get(key) {
       if (key === 'sshPool') return sshPool;
-      if (key === 'settings') return { describe: () => [{ ns: '@dsh-ssh/dsh-ssh', value: { hosts } }] };
+      if (key === 'settings') return { get: () => ({ hosts }) };
       return undefined;
     },
     logger: { info: () => {} },

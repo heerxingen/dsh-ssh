@@ -94,24 +94,20 @@ test('bindTypertRemote is the exact binding shape the gateway validates', () => 
 
 // ---------- CRUD over the Typert channel (settings wire not exposed) ----------
 
-/**
- * Minimal settings-forms double for one row: describe() exposes the live value plus a
- * revision, mutate() applies set-ops to it; stored() reads the double's own state.
- */
-function makeSettings(initialHosts) {
-  const id = '@dsh-ssh/dsh-ssh';
-  const doc = { hosts: { ...(initialHosts ?? {}) } };
+/** Minimal settings provider double: get/describe/writable/mutate with revision semantics. */
+function makeSettings(initialHosts, legacyHosts) {
+  let doc = { hosts: { ...(initialHosts ?? {}) } };
+  const legacyDoc = { hosts: { ...(legacyHosts ?? {}) } };
   let revision = 0;
   return {
-    id,
-    describe: () => [{ ns: id, revision, value: doc }],
+    get: (ns) => (ns === 'dsh-ssh-hosts' ? doc : ns === 'dssh-hosts' ? legacyDoc : undefined),
+    describe: () => [{ ns: 'dsh-ssh-hosts', revision }],
     writable: true,
     lastWrite: null,
-    stored: () => doc.hosts,
     async mutate(ns, ops, expectedRevision) {
-      assert.equal(ns, id);
+      assert.equal(ns, 'dsh-ssh-hosts');
       if (expectedRevision !== undefined && expectedRevision !== revision) {
-        const err = new Error(`settings form "${id}" changed since it was read (expected revision ${expectedRevision}, now ${revision})`);
+        const err = new Error(`settings namespace "dsh-ssh-hosts" changed since it was read (expected revision ${expectedRevision}, now ${revision})`);
         err.name = 'SettingsConflictError';
         err.code = 'SETTINGS_CONFLICT';
         throw err;
@@ -150,7 +146,7 @@ test('listHosts returns the REDACTED dict with revision + secrets + writable', (
   assert.equal(result.revision, 0);
   assert.deepEqual(result.secrets, [{ path: ['hosts', 'h1', 'auth', 'password'], set: true }]);
   assert.equal(result.writable, true);
-  assert.equal(settings.stored().h1.auth.password, 's3cret'); // store untouched
+  assert.equal(settings.get('dsh-ssh-hosts').hosts.h1.auth.password, 's3cret'); // store untouched
   ctx.dispose?.();
 });
 
@@ -170,10 +166,10 @@ test('saveHost creates a new host (set op, id authoritative, no stored secret)',
   const { ctx, svc } = makeService({}, settings);
   const result = await svc.saveHost('h-new', { id: 'spoofed', name: 'n', host: 'h', port: 22, user: 'u', auth: { type: 'key' } }, 0);
   assert.deepEqual(result, { ok: true });
-  assert.deepEqual(settings.lastWrite.ops, [{ op: 'set', path: ['hosts'], value: { 'h-new': settings.stored()['h-new'] } }]);
+  assert.deepEqual(settings.lastWrite.ops, [{ op: 'set', path: ['hosts'], value: { 'h-new': settings.get('dsh-ssh-hosts').hosts['h-new'] } }]);
   assert.equal(settings.lastWrite.expectedRevision, 0);
-  assert.equal(settings.stored()['h-new'].id, 'h-new'); // id forced, patch.id ignored
-  assert.equal(settings.stored()['h-new'].name, 'n');
+  assert.equal(settings.get('dsh-ssh-hosts').hosts['h-new'].id, 'h-new'); // id forced, patch.id ignored
+  assert.equal(settings.get('dsh-ssh-hosts').hosts['h-new'].name, 'n');
   ctx.dispose?.();
 });
 
@@ -183,7 +179,7 @@ test('saveHost edit keeps the stored password when the patch omits it', async ()
   });
   const { ctx, svc } = makeService({}, settings);
   await svc.saveHost('h1', { id: 'h1', name: 'box2', host: 'h', port: 22, user: 'u', auth: { type: 'password' } }, 0);
-  const saved = settings.stored().h1;
+  const saved = settings.get('dsh-ssh-hosts').hosts.h1;
   assert.equal(saved.name, 'box2');
   assert.deepEqual(saved.auth, { type: 'password', password: 'stored' });
   ctx.dispose?.();
@@ -195,7 +191,7 @@ test('saveHost overwrites the password when the patch carries one', async () => 
   });
   const { ctx, svc } = makeService({}, settings);
   await svc.saveHost('h1', { id: 'h1', name: 'box', host: 'h', port: 22, user: 'u', auth: { type: 'password', password: 'new' } }, 0);
-  assert.deepEqual(settings.stored().h1.auth, { type: 'password', password: 'new' });
+  assert.deepEqual(settings.get('dsh-ssh-hosts').hosts.h1.auth, { type: 'password', password: 'new' });
   ctx.dispose?.();
 });
 
@@ -205,8 +201,8 @@ test('saveHost switching to key auth clears the stored password', async () => {
   });
   const { ctx, svc } = makeService({}, settings);
   await svc.saveHost('h1', { id: 'h1', name: 'box', host: 'h', port: 22, user: 'u', auth: { type: 'key', privateKeyPath: '~/.ssh/id' } }, 0);
-  assert.deepEqual(settings.stored().h1.auth, { type: 'key', privateKeyPath: '~/.ssh/id' });
-  assert.equal('password' in settings.stored().h1.auth, false);
+  assert.deepEqual(settings.get('dsh-ssh-hosts').hosts.h1.auth, { type: 'key', privateKeyPath: '~/.ssh/id' });
+  assert.equal('password' in settings.get('dsh-ssh-hosts').hosts.h1.auth, false);
   ctx.dispose?.();
 });
 
@@ -238,7 +234,7 @@ test('deleteHost removes the entry via an unset op and is idempotent for missing
 
   await svc.deleteHost('h1', 0);
   assert.deepEqual(settings.lastWrite.ops, [{ op: 'set', path: ['hosts'], value: {} }]);
-  assert.equal('h1' in settings.stored(), false);
+  assert.equal('h1' in settings.get('dsh-ssh-hosts').hosts, false);
   ctx.dispose?.();
 });
 
@@ -326,7 +322,7 @@ test('resolveRemoteHome execs echo $HOME and returns the absolute home', async (
   ctx.dispose?.();
 });
 
-test('createPlaceholder validates the configured host and creates a real dir under env root', async () => {
+test('createPlaceholder validates the host in dsh-ssh-hosts and creates a real dir under env root', async () => {
   const fsMod = await import('node:fs');
   const osMod = await import('node:os');
   const pathMod = await import('node:path');

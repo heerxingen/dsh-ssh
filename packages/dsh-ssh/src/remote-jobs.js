@@ -1,10 +1,7 @@
 // @dsh-ssh/dsh-ssh — remote bash background jobs: pure helpers + job hooks.
 // Integrates with the official jobs contract:
-//   execute(run_in_background) → ctx.get('jobs').start({ kind:'bash', label, owner: <session id>, run })
+//   execute(run_in_background) → ctx.get('jobs').start({ run, kind:'bash', label, owner })
 //     → {kind:'background', jobId}
-// The owner is the owning session's id (the agent registry resolves it back to
-// the live Agent, and the same id fences job_output/job_list/job_kill), never
-// the agent object itself.
 // The three controllers (job_output/job_list/job_kill) work unchanged because
 // they only see the ctx.jobs registry.
 //
@@ -20,26 +17,28 @@
 //
 // Each composed command is a single exec (sent over the ssh2 channel; no
 // persistent channel needed). Redirecting the background process to a log file
-// lets it outlive the channel; done polls the status file plus process-alive
-// probes to derive the final state.
+// lets it outlive the channel. Output is collected by incrementally reading the
+// log file with a cursor (equivalent to job_output); done polls the status file
+// plus process-alive probes to derive the final state.
 //
-// Output contract: the registry owns one bounded output ring per job, and the
-// model reads it through job_output → registry.read(id, sessionId). A producer
-// publishes bytes only by calling job.append(text) on the JobHandle handed to
-// run(job); a chunk without a channel renders as the job's stdout. The remote
-// log can only be fetched over async SFTP, so the done loop refreshes its local
-// copy on every poll round and appends the bytes added since the last
-// successful refresh, including one final refresh before it returns the
-// outcome.
+// Key contract: the official registry (dsh-jobs-local) calls job.readOutput()
+// without awaiting it (dsh-jobs-local/lib/index.js L190) and returns its value
+// directly as the job_output text field, which must be a string (lossless JSON).
+// So readOutput must return a string synchronously (a Promise would make
+// job_output report `value is not lossless JSON`). The official bash reads a
+// process-local in-memory buffer synchronously (dsh-tool-bash/lib/index.js L423 /
+// renderProcessRead); here the log lives in a remote file and can only be fetched
+// over async SFTP, so the done loop asynchronously refreshes a local buffered copy
+// and readOutput synchronously advances a cursor over it. job_output is poll-based:
+// each call moves the cursor forward and the next call returns the delta.
 //
-// run() returns exactly {cancel, done}: cancel() stops the remote process tree,
-// done resolves a JobOutcome ({status, detail}). The registry appends the
-// job_kill reason to the terminal detail itself, so cancel() ignores it.
-// _meta/_state/_spawned/_refresh are only for tests/ops introspection and are
-// mounted as non-enumerable properties, so they never enter registry records or
-// serialization. The done resolution shape per-field matches the official
-// ProcessOutcome: completed → {status:'completed', detail:'exit code: N'};
-// killed → {status:'killed', detail:'signal: TERM'}.
+// run() returns exactly {cancel, done, readOutput} per the official contract
+// (dsh-tool-bash/lib/index.js L418-425). _meta/_state/_spawned/_refresh are only
+// for tests/ops introspection and are mounted as non-enumerable properties, so
+// they never enter registry records or serialization. The done resolution shape
+// per-field matches the official ProcessOutcome (dsh-tool-bash/lib/index.js
+// L21-30): completed → {status:'completed', detail:'exit code: N'}; killed →
+// {status:'killed', detail:'signal: TERM'}.
 import { SshError, shellQuoteSingle } from './ssh-core.js';
 
 // Default poll interval (ms), overridable via config.remoteJobPollMs.
@@ -94,21 +93,16 @@ export function parseSpawnPid(text) {
 }
 
 // ── Runtime job hooks ────────────────────────────────────────────────────────
-// Called inside jobs.start's run(job) (must return hooks synchronously; the actual
-// spawn is async). conn: an acquired SshConn; job: the registry's JobHandle, whose
-// append(text) is this job's output path; kind: the kind used for registration
+// Called inside jobs.start's run() (must return hooks synchronously; the actual
+// spawn is async). conn: an acquired SshConn; kind: the kind used for registration
 // (official bash uses 'bash').
-// Returns { cancel, done }; startup info (_meta/_state) is attached for tests.
-export function createRemoteBashJobHooks({ job, conn, cmd, cwd, hostId, jobDir, pollMs }) {
+// Returns { cancel, done, readOutput }; startup info (_meta/_state) is attached for tests.
+export function createRemoteBashJobHooks({ conn, cmd, cwd, hostId, jobDir, pollMs }) {
   const t = token();
   const logPath = jobDir + '/' + t + '.log';
   const statusPath = jobDir + '/' + t + '.status';
   const interval = pollMs ?? DEFAULT_POLL_MS;
   const state = { cancelled: false, pid: null };
-  // Output sink: the registry-issued handle when it is present. Hooks built without
-  // a handle (tests, ops probes) still run the job; their log deltas simply have no
-  // ring to land in.
-  const append = job !== void 0 && typeof job.append === 'function' ? (text) => job.append(text) : () => {};
 
   const spawned = (async () => {
     // Ensure the remote jobDir exists first (mkdir -p, idempotent). Real service
@@ -156,33 +150,35 @@ export function createRemoteBashJobHooks({ job, conn, cmd, cwd, hostId, jobDir, 
     }
   }
 
-  // Reads the whole remote log. A missing/unreadable log (not created yet, or
-  // already removed at settlement) throws so the caller keeps the last good copy
-  // instead of treating the log as empty.
   async function readLogFile() {
-    const fs = await conn.fs();
-    const bytes = await fs.readBytes(logPath);
-    return bytes.toString('utf8');
+    try {
+      const fs = await conn.fs();
+      const bytes = await fs.readBytes(logPath);
+      return bytes.toString('utf8');
+    } catch {
+      return '';
+    }
   }
 
-  // ── Log delta publishing ────────────────────────────────────────────────
-  // The remote log is pulled asynchronously while the ring only accepts pushes, so
-  // every refresh appends the bytes added since the last successful pull: each line
-  // reaches job_output exactly once, in order, and a failed pull publishes nothing.
+  // ── Synchronous readOutput local buffer ─────────────────────────────────
+  // The official registry.read() does not await readOutput(); job_output's text
+  // must be a string. So readOutput synchronously slices the buffered cursor delta;
+  // buffered is filled asynchronously by refreshLog() (from the done loop and test hooks).
   let buffered = '';
   let cursor = 0;
   async function refreshLog() {
-    let text;
     try {
-      text = await readLogFile();
+      buffered = await readLogFile();
     } catch {
-      return; // pull failed (file not ready/removed): keep the previous buffer and cursor
+      /* pull failed (file not ready/deleted): keep the previous buffer */
     }
-    const delta = text.slice(cursor);
-    buffered = text;
-    cursor = text.length;
-    if (delta.length > 0) append(delta);
   }
+  // readOutput synchronously returns the buffered text added since the last read (cursor advances by chars).
+  const readOutput = () => {
+    const delta = buffered.slice(cursor);
+    cursor = buffered.length;
+    return delta;
+  };
 
   // done: poll until terminated. cancel sets state.cancelled and sends the kill-tree
   // command; cancelled → killed.
@@ -207,7 +203,7 @@ export function createRemoteBashJobHooks({ job, conn, cmd, cwd, hostId, jobDir, 
         }
       }
       if (status !== null) {
-        await refreshLog(); // final pull before terminating: publish the remaining output
+        await refreshLog(); // final sync before terminating (grab the full output)
         // Best-effort cleanup of log/status files (job is done); failures are silent.
         const fs = await conn.fs().catch(() => null);
         if (fs) {
@@ -222,8 +218,6 @@ export function createRemoteBashJobHooks({ job, conn, cmd, cwd, hostId, jobDir, 
   done.catch(() => {});
 
   const hooks = {
-    // The registry forwards job_kill's reason and folds it into the terminal detail
-    // itself (settle → detail + '; ' + reason), so cancel only stops the remote tree.
     cancel() {
       state.cancelled = true;
       const fire = (pid) => conn.exec(buildKillTreeCommand(pid), { timeoutMs: 10_000 }).catch(() => {});
@@ -231,6 +225,7 @@ export function createRemoteBashJobHooks({ job, conn, cmd, cwd, hostId, jobDir, 
       else spawned.then(fire).catch(() => {});
     },
     done,
+    readOutput,
   };
   // Introspection/test fields are non-enumerable so they never appear in registry
   // records, snapshots, or any serialization (invisible to Object.keys/JSON/spread).

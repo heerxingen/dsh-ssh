@@ -23,7 +23,7 @@ import { ESCALATION_TARGETS, approveEscalation, validateEscalationArgs } from '@
 import { buildSearchCaps, createGlobTool, createGrepTool } from './tools/search.js';
 import { buildFsCaps, createReadTool, createWriteTool, createEditTool, createReadImageTool } from './tools/fs.js';
 import { createBashTool } from './tools/bash.js';
-import { storedHosts } from './src/settings.js';
+import { readHostsDoc } from './src/settings.js';
 
 export const name = '@dsh-ssh/dsh-ssh-tools';
 // shell/fs are injected to read sandboxMode, matching how the official tools advertise
@@ -33,10 +33,16 @@ export const inject = ['tools', 'shell', 'fs'];
 // Routing / remote execution helpers
 // ═══════════════════════════════════════════════════════════════════════════
 function getHostConfig(ctx, hostId) {
-  const hosts = storedHosts(ctx);
+  let hosts = {};
+  try {
+    const settings = ctx.get('settings');
+    if (settings && typeof settings.get === 'function') {
+      hosts = readHostsDoc((ns) => settings.get(ns)).hosts;
+    }
+  } catch { hosts = {}; }
   const host = hosts[hostId];
   if (!host || typeof host !== 'object') {
-    throw new Error(`remote host "${hostId}" is not configured in this plugin's settings — add it in Settings → SSH hosts, or the workspace placeholder refers to a removed host`);
+    throw new Error(`remote host "${hostId}" is not configured in dsh-ssh-hosts — add it in Settings → SSH hosts, or the workspace placeholder refers to a removed host`);
   }
   return { ...host, id: hostId };
 }

@@ -26,11 +26,10 @@ test('remoteResponseError prefers the wire error message, falls back otherwise',
   assert.equal(remoteResponseError({ ok: false, error: 'plain-string-error' }, 'fb'), 'fb');
 });
 
-// Directory browse capability detection: the local tab falls back to the system
-// dialog (uiWorkspace.pickDirectory) instead of listDirectory when the host serves
-// no listing. Pre-0.1.7 hosts refused with directory-picker-unavailable / "needs the
-// browse capability"; 0.1.7 hosts that mounted a "native"-only picker fail the call at
-// the RPC layer, while a directory BUSINESS failure keeps its own "directory-*" code.
+// Directory browse capability detection: when host picker only serves "native",
+// ctx.workspaces.listDirectory/createDirectory throws DirectoryBrowseError (rpcError with
+// directory-picker-unavailable containing "needs the browse capability");
+// on match, fallback is ctx.workspaces.pickDirectory() system dialog instead of listDirectory.
 test('isBrowseCapabilityError: DirectoryBrowseError shape (rpcError + message)', () => {
   const browseErr = {
     name: 'DirectoryBrowseError',
@@ -55,15 +54,9 @@ test('isBrowseCapabilityError: mirrors createDirectory (native host) and plain E
   assert.equal(isBrowseCapabilityError(createErr), true);
   assert.equal(isBrowseCapabilityError(new Error('ENOENT: no such file')), false);
   assert.equal(isBrowseCapabilityError({ rpcError: { code: 'directory-exists', message: 'already there' } }), false);
-  assert.equal(isBrowseCapabilityError({ rpcError: { code: 'directory-unreadable', message: 'cannot list /x: EACCES' } }), false);
   assert.equal(isBrowseCapabilityError('needs the browse capability (bare string)'), false);
   assert.equal(isBrowseCapabilityError(null), false);
   assert.equal(isBrowseCapabilityError(undefined), false);
-});
-
-test('isBrowseCapabilityError: a listing refused at the RPC layer means no browse backend', () => {
-  assert.equal(isBrowseCapabilityError({ rpcError: { code: 'gateway/unknown-endpoint', message: 'no such endpoint' } }), true);
-  assert.equal(isBrowseCapabilityError({ name: 'DirectoryBrowseError', rpcError: { code: 'gateway/method-missing', message: 'directoryPicker.list is not served' } }), true);
 });
 
 test('isBrowseCapabilityError: message-only match without rpcError', () => {

@@ -74,7 +74,7 @@ function makeSandboxCtx({ hosts = HOSTS, sshPool, mode = 'workspace-write', appr
     shell, fs,
     get(key) {
       if (key === 'sshPool') return sshPool;
-      if (key === 'settings') return { describe: () => [{ ns: '@dsh-ssh/dsh-ssh', value: { hosts } }] };
+      if (key === 'settings') return { get: () => ({ hosts }) };
       if (key === 'attachments') return undefined;
       if (key === 'sandboxPolicy') return sandboxPolicy;
       if (key === 'approval') return approval;
@@ -123,7 +123,7 @@ test('local delegation mode (no remoteRouting, backend mounted): bash/write/edit
 test('no sandbox backend (no remoteRouting): bash/write/edit schema excludes escalation fields', () => {
   const { pool } = makePool({ sftp: makeMemorySftp({}) });
   const ctx = makeSandboxCtx({ sshPool: pool });
-  ctx.get = (key) => (key === 'sshPool' || key === 'settings') ? (key === 'sshPool' ? pool : { describe: () => [{ ns: '@dsh-ssh/dsh-ssh', value: { hosts: HOSTS } }] }) : undefined;
+  ctx.get = (key) => (key === 'sshPool' || key === 'settings') ? (key === 'sshPool' ? pool : { get: () => ({ hosts: HOSTS }) }) : undefined;
   apply(ctx);
   for (const name of ['bash', 'write', 'edit']) {
     const props = (getTool(ctx, name).parameters ?? {}).properties ?? {};

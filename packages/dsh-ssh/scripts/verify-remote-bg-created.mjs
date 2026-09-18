@@ -88,25 +88,22 @@ try {
   const jobId = startRes.jobId;
   log('jobId=' + jobId);
 
-  const caller = remoteAgent.id ?? remoteAgent;
+  const caller = remoteAgent;
 
-  // @2s: should still be running. jobs.read returns the chunks published since the last
-  // read plus the job view ({id, kind, label, status, detail, ...}).
+  // @2s: should still be running, readOutput increment contains TICK-1 (sync contract: read is not awaited)
   await sleep(2000);
   let rd = jobs.read(jobId, caller);
-  let rdText = rd.chunks.map((chunk) => chunk.text).join('');
-  log('@2s status=' + rd.job.status + ' detail=' + JSON.stringify(rd.job.detail) + ' output=' + JSON.stringify(rdText.slice(0, 80)));
-  if (!/TICK-1/.test(rdText)) throw new Error('job_output missing TICK-1 at 2s: ' + JSON.stringify(rdText));
-  if (rd.job.status !== 'running') throw new Error('job not running at 2s -> status=' + rd.job.status + ' (' + JSON.stringify(rd.job.detail) + ') OUTPUT=' + JSON.stringify(rdText));
+  log('@2s status=' + rd.snapshot.status + ' detail=' + JSON.stringify(rd.snapshot.detail) + ' output=' + JSON.stringify(rd.text.slice(0, 80)));
+  if (typeof rd.text !== 'string') throw new Error('readOutput not string (sync contract violated): ' + typeof rd.text);
+  if (!/TICK-1/.test(rd.text)) throw new Error('job_output missing TICK-1 at 2s: ' + JSON.stringify(rd.text));
+  if (rd.snapshot.status !== 'running') throw new Error('job not running at 2s -> status=' + rd.snapshot.status + ' (' + JSON.stringify(rd.snapshot.detail) + ') OUTPUT=' + JSON.stringify(rd.text));
 
   // @5s: must still be running
   await sleep(3000);
   rd = jobs.read(jobId, caller);
-  rdText = rd.chunks.map((chunk) => chunk.text).join('');
-  log('@5s status=' + rd.job.status + ' detail=' + JSON.stringify(rd.job.detail) + ' incremental=' + JSON.stringify(rdText.slice(0, 80)));
-  if (rd.job.status !== 'running') throw new Error('job completed prematurely at 5s: ' + rd.job.status + ' ' + JSON.stringify(rd.job.detail));
-  // jobs.read is cursor-incremental: TICK-1 was already consumed at @2s, so only output
-  // published since then rides in these chunks.
+  log('@5s status=' + rd.snapshot.status + ' detail=' + JSON.stringify(rd.snapshot.detail) + ' incremental=' + JSON.stringify(rd.text.slice(0, 80)));
+  if (rd.snapshot.status !== 'running') throw new Error('job completed prematurely at 5s: ' + rd.snapshot.status + ' ' + JSON.stringify(rd.snapshot.detail));
+  // readOutput is cursor-incremental: TICK-1 was already read at @2s, now there should be no new output (sleep 30 not yet done), still running
 
   // Remote evidence: process alive + jobDir contains log/status/side.txt
   const ps = await conn.exec('ps -eo pid,pgid,args | grep -E "sleep 30" | grep -v grep || echo NONE', { timeoutMs: 10000 });

@@ -1,7 +1,9 @@
 // @dsh-ssh/dsh-ssh — remote background jobs tests (node --test, no network).
 // Covers: command assembly pure functions (setsid/cd embedding/escaping/unique token), parseSpawnPid,
-//       and createRemoteBashJobHooks for jobs.start: run(job) returns exactly {cancel,done}, and every
-//       log delta is published through the job handle's append(text) — the only output path job_output reads.
+//       and createRemoteBashJobHooks controller shape for jobs.start ({cancel,done,readOutput} exactly).
+//       readOutput must return string synchronously (registry.read() is not awaited),
+//       returning Promise breaks job_output with "value is not lossless JSON". Data is read synchronously
+//       from local buffered cache, populated asynchronously by done polling + _refresh test hook.
 // Uses in-memory fake conn for exec/sftp, no real network.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -39,11 +41,6 @@ function makeFakeConn({ pid = 4242, spawnStdout = pid + '\n', aliveCount = Infin
     async fs() { return sftp; },
   };
   return conn;
-}
-
-// ── fake JobHandle: records what the hooks publish to the job's output ring ──
-function makeJobHandle() {
-  return { chunks: [], append(text) { this.chunks.push(text); } };
 }
 
 // ── Command assembly pure functions ─────────────────────────────────────────
@@ -107,20 +104,22 @@ test('parseSpawnPid: parses $! output', () => {
   assert.equal(parseSpawnPid('12 34'), null);
 });
 
-// ── hooks contract shape (jobs.start run(job) return) ─────────────────────────
-test('createRemoteBashJobHooks: returns {cancel, done} strict contract', async () => {
+// ── hooks contract shape (jobs.start run() return) ─────────────────────────────
+test('createRemoteBashJobHooks: returns {cancel, done, readOutput} strict contract', async () => {
   const conn = makeFakeConn();
-  const hooks = createRemoteBashJobHooks({ job: makeJobHandle(), conn, cmd: 'echo hi', cwd: '/tmp/w', hostId: 'u1', jobDir: '/tmp/dsh-ssh-jobs-u1', pollMs: 5 });
+  const hooks = createRemoteBashJobHooks({ conn, cmd: 'echo hi', cwd: '/tmp/w', hostId: 'u1', jobDir: '/tmp/dsh-ssh-jobs-u1', pollMs: 5 });
   assert.equal(typeof hooks.cancel, 'function');
   assert.equal(typeof hooks.done.then, 'function'); // done is Promise
-  // Enumerable keys strictly {cancel, done}: the registry's JobHooks contract
-  // (output travels through job.append, not through the hooks object).
+  assert.equal(typeof hooks.readOutput, 'function');
+  // Enumerable keys strictly {cancel, done, readOutput} (aligns with official implementation).
   // _meta/_state/_spawned/_refresh are non-enumerable internals, never serialized.
-  assert.deepEqual(Object.keys(hooks), ['cancel', 'done']);
+  assert.deepEqual(Object.keys(hooks), ['cancel', 'done', 'readOutput']);
   // Meta (non-enumerable): unique log/status paths inside jobDir
   assert.match(hooks._meta.logPath, /^\/tmp\/dsh-ssh-jobs-u1\/[0-9a-z-]+\.log$/);
   assert.match(hooks._meta.statusPath, /^\/tmp\/dsh-ssh-jobs-u1\/[0-9a-z-]+\.status$/);
   assert.notEqual(hooks._meta.logPath, hooks._meta.statusPath);
+  // readOutput must return string synchronously (Promise breaks job_output)
+  assert.equal(typeof hooks.readOutput(), 'string');
   // Cleanup: terminate done polling (write status to complete) to avoid hanging timers
   conn.setFile(hooks._meta.statusPath, '0');
   await hooks.done;
@@ -154,41 +153,21 @@ test('createRemoteBashJobHooks: cancel -> killed with no leftover files', async 
   assert.equal(conn._sftp._files.size, 0);            // cleanup status/log
 });
 
-test('createRemoteBashJobHooks: log deltas are published through job.append (incremental)', async () => {
+test('createRemoteBashJobHooks: readOutput incremental read (cursor advances)', async () => {
   const conn = makeFakeConn();
-  const job = makeJobHandle();
-  const hooks = createRemoteBashJobHooks({ job, conn, cmd: 'x', cwd: '/tmp/w', hostId: 'u1', jobDir: '/tmp/dsh-ssh-jobs-u1', pollMs: 5 });
+  const hooks = createRemoteBashJobHooks({ conn, cmd: 'x', cwd: '/tmp/w', hostId: 'u1', jobDir: '/tmp/dsh-ssh-jobs-u1', pollMs: 5 });
   await hooks._spawned;
   const logPath = hooks._meta.logPath;
   conn.setFile(logPath, 'alpha\n');
-  await hooks._refresh();                            // async SFTP pull -> synchronous ring append
-  assert.deepEqual(job.chunks, ['alpha\n']);         // the new bytes reach the job's output
+  await hooks._refresh();                            // sync contract: buffer filled async by _refresh/done polling
+  assert.equal(hooks.readOutput(), 'alpha\n');      // readOutput returns string synchronously
   conn.setFile(logPath, 'alpha\nbeta\n');
   await hooks._refresh();
-  assert.deepEqual(job.chunks, ['alpha\n', 'beta\n']); // incremental: only the added bytes
-  await hooks._refresh();
-  assert.deepEqual(job.chunks, ['alpha\n', 'beta\n']); // nothing new -> nothing appended
-  // A failed pull must not republish already-published bytes
-  const readBytes = conn._sftp.readBytes;
-  conn._sftp.readBytes = async () => { throw new Error('ENOENT'); };
-  await hooks._refresh();
-  assert.deepEqual(job.chunks, ['alpha\n', 'beta\n']);
-  conn._sftp.readBytes = readBytes;
+  assert.equal(hooks.readOutput(), 'beta\n');       // incremental
+  assert.equal(hooks.readOutput(), '');              // no new data
   // Terminate done polling (write status to complete) to avoid hanging timers
   conn.setFile(hooks._meta.statusPath, '0');
   await hooks.done;
-});
-
-test('createRemoteBashJobHooks: the final log pull is published before done settles', async () => {
-  const conn = makeFakeConn({ aliveCount: 1 });
-  const job = makeJobHandle();
-  const hooks = createRemoteBashJobHooks({ job, conn, cmd: 'x', cwd: '/tmp/w', hostId: 'u1', jobDir: '/tmp/dsh-ssh-jobs-u1', pollMs: 5 });
-  await hooks._spawned;
-  conn.setFile(hooks._meta.logPath, 'only\n');
-  conn.setFile(hooks._meta.statusPath, '0');
-  const outcome = await hooks.done;
-  assert.equal(outcome.status, 'completed');
-  assert.equal(job.chunks.join(''), 'only\n'); // everything the remote log held reached the job's output
 });
 
 
@@ -210,22 +189,21 @@ test('createRemoteBashJobHooks: long task does not falsely complete when process
   assert.match(o.detail, /exit code: 0/);
 });
 
-test('createRemoteBashJobHooks: publishing incremental output while running does not settle task', async () => {
+test('createRemoteBashJobHooks: reading incremental output while running does not settle task', async () => {
   const conn = makeFakeConn({ aliveCount: Infinity });
-  const job = makeJobHandle();
-  const hooks = createRemoteBashJobHooks({ job, conn, cmd: 'echo a; sleep 600; echo b', cwd: '/tmp/w', hostId: 'u1', jobDir: '/tmp/dsh-ssh-jobs-u1', pollMs: 5 });
+  const hooks = createRemoteBashJobHooks({ conn, cmd: 'echo a; sleep 600; echo b', cwd: '/tmp/w', hostId: 'u1', jobDir: '/tmp/dsh-ssh-jobs-u1', pollMs: 5 });
   await hooks._spawned;
   conn.setFile(hooks._meta.logPath, 'a\n');
   await hooks._refresh();
-  assert.deepEqual(job.chunks, ['a\n']);
+  assert.equal(hooks.readOutput(), 'a\n');
   const raced = await Promise.race([
     hooks.done.then((o) => ({ settled: true, o })),
     new Promise((resolve) => setTimeout(() => resolve({ settled: false }), 150)),
   ]);
-  assert.equal(raced.settled, false, 'publishing output while running must not settle task');
+  assert.equal(raced.settled, false, 'reading output while running must not settle task');
   conn.setFile(hooks._meta.logPath, 'a\nb\n');
   await hooks._refresh();
-  assert.deepEqual(job.chunks, ['a\n', 'b\n']); // incremental publish ok
+  assert.equal(hooks.readOutput(), 'b\n'); // incremental read ok
   conn.setFile(hooks._meta.statusPath, '0');
   await hooks.done;
 });

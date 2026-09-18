@@ -34,32 +34,16 @@ window.__ModuleLoader__.load({
     var primitives = require("@deepseek-ai/dsh-client-ui-primitives");
     var Button = primitives.Button;
     var Input = primitives.Input;
-    // DSH 0.1.7 renamed the size-suffixed icon atoms to size-neutral glyphs that
-    // carry the same {size, className} props and the same default drawn size:
-    // IconPlusOutline16 → IconPlusOutlineRegular, IconChevronDownOutline14 →
-    // IconChevronDownOutlineRegular, IconInspectOutline12 → IconInspectOutlineRegular.
-    // Resolving the current name first and the legacy one second keeps one bundle
-    // rendering on both DSH generations (an icon read by its absent name is
-    // `undefined`, and React.createElement(undefined) fails the whole subtree — which
-    // is how the directory-flow panel and the settings section broke on 0.1.7).
-    // A name present in neither generation degrades to an empty glyph instead of
-    // taking its host surface down.
-    function resolveIcon(current, legacy) {
-      return primitives[current] || primitives[legacy]
-        || function UnavailableIcon() { return null; };
-    }
-    var IconPlusOutline = resolveIcon("IconPlusOutlineRegular", "IconPlusOutline16");
-    var IconEditOutline = resolveIcon("IconEditOutlineRegular", "IconEditOutline16");
-    var IconTrashOutline = resolveIcon("IconTrashOutlineRegular", "IconTrashOutline16");
-    var IconCheckOutline = resolveIcon("IconCheckOutlineRegular", "IconCheckOutline16");
-    var IconWarningOutline = resolveIcon("IconWarningOutlineRegular", "IconWarningOutline16");
-    var IconRefreshOutline = resolveIcon("IconRefreshOutlineRegular", "IconRefreshOutline16");
-    var IconCloseOutline = resolveIcon("IconCloseOutlineRegular", "IconCloseOutline16");
-    var IconLoadingOutline = resolveIcon("IconLoadingOutlineRegular", "IconLoadingOutline16");
-    var IconFolderClose = resolveIcon("IconFolderCloseRegular", "IconFolderClose16");
-    var IconChevronDownOutline = resolveIcon("IconChevronDownOutlineRegular", "IconChevronDownOutline14");
-    var IconApiOutline = resolveIcon("IconApiOutlineRegular", "IconApiOutline14");
-    var IconInspectOutline = resolveIcon("IconInspectOutlineRegular", "IconInspectOutline12");
+    var IconPlusOutline16 = primitives.IconPlusOutline16;
+    var IconEditOutline16 = primitives.IconEditOutline16;
+    var IconTrashOutline16 = primitives.IconTrashOutline16;
+    var IconCheckOutline16 = primitives.IconCheckOutline16;
+    var IconWarningOutline16 = primitives.IconWarningOutline16;
+    var IconRefreshOutline16 = primitives.IconRefreshOutline16;
+    var IconCloseOutline16 = primitives.IconCloseOutline16;
+    var IconLoadingOutline16 = primitives.IconLoadingOutline16;
+    var IconFolderClose16 = primitives.IconFolderClose16;
+    var IconChevronDownOutline14 = primitives.IconChevronDownOutline14;
     var Menu = primitives.Menu;
     var Modal = primitives.Modal;
     var StateDot = primitives.StateDot;
@@ -392,18 +376,12 @@ window.__ModuleLoader__.load({
     }
 
     // ---------- Typert client remote (inline copy of lib/typert-contribution.js) ----------
-    // Client-side $mount REQUIRES strict codecs, and a strict codec materializes its
-    // boundary schema through create() (dsh-typert-registry validateCodec: a codec
-    // without create() is rejected with "strict codec has no create() factory"). The
-    // schema is a JSON passthrough because values are already validated host-side
-    // (hosts-model.validateHostConfig + the row's settings schema + ssh-core) and the
-    // gateway re-asserts JSON-safety on the wire.
+    // Client-side $mount REQUIRES strict codecs (dsh-api-gateway/lib/client.js
+    // requireStrictCodec); the schema is a JSON passthrough because values are
+    // already validated host-side (hosts-model.validateHostConfig + settings
+    // schema + ssh-core) and the gateway re-asserts JSON-safety on the wire.
     function strictCodec(typeSymbol) {
-      return {
-        mode: 'strict',
-        typeSymbol: typeSymbol,
-        create: function () { return { parse: function (value) { return value; } }; },
-      };
+      return { mode: 'strict', typeSymbol: typeSymbol, schema: { parse: function (value) { return value; } } };
     }
     function remoteDescriptor(method, params, resultType) {
       return {
@@ -447,25 +425,20 @@ window.__ModuleLoader__.load({
         ? err.error.message : '';
       return msg || fallback;
     }
-    // Detect missing browse capability: the local tab falls back to the official
-    // native system dialog (uiWorkspace.pickDirectory) when this host cannot serve a
-    // listing. Two host generations answer differently: pre-0.1.7 refused with the
-    // business code "directory-picker-unavailable" / the message "needs the browse
-    // capability"; 0.1.7 serves listing only when its mounted picker backend is
-    // "browse", so a native-only host fails the call at the RPC layer. A directory
-    // BUSINESS failure always carries a "directory-*" code, so any other RPC code on a
-    // listing call means no listing is served. Keep in sync with the canonical copy in
-    // lib/typert-contribution.js.
+    // Detect missing browse capability: when the host composed picker only serves
+    // "native", listDirectory/createDirectory return directory-picker-unavailable which
+    // the client wraps as DirectoryBrowseError (the rpcError carries the business code;
+    // dsh-host-apiproxy/lib/index.js:3174-3204). On hit the local tab falls back to the
+    // official native system dialog (ctx.workspaces.pickDirectory). Keep in sync with the
+    // canonical copy in lib/typert-contribution.js.
     function isBrowseCapabilityError(err) {
       if (!err || typeof err !== 'object') return false;
       var rpc = err.rpcError && typeof err.rpcError === 'object' ? err.rpcError : null;
-      var code = rpc && typeof rpc.code === 'string' ? rpc.code : '';
-      if (code === 'directory-picker-unavailable') return true;
+      if (rpc && rpc.code === 'directory-picker-unavailable') return true;
       var rpcMsg = rpc && typeof rpc.message === 'string' ? rpc.message : '';
       var errMsg = typeof err.message === 'string' ? err.message : '';
-      if (rpcMsg.indexOf('needs the browse capability') !== -1) return true;
-      if (errMsg.indexOf('needs the browse capability') !== -1) return true;
-      return code !== '' && code.indexOf('directory-') !== 0;
+      return rpcMsg.indexOf('needs the browse capability') !== -1
+        || errMsg.indexOf('needs the browse capability') !== -1;
     }
 
     // ---------- store ----------
@@ -485,6 +458,7 @@ window.__ModuleLoader__.load({
       };
     }
 
+    var HOSTS_NS = 'dsh-ssh-hosts';
     // TOFU: this stage matches ssh-core's HOST_KEY_UNKNOWN_STAGE; a result carrying
     // this stage triggers the trust dialog.
     var HOST_KEY_UNKNOWN_STAGE = 'host-key-unknown';
@@ -909,7 +883,7 @@ window.__ModuleLoader__.load({
           "aria-label": dismissLabel,
           onClick: props.onDismiss,
           style: { border: "none", background: "transparent", color: "inherit", cursor: "pointer", padding: 0, flex: "none" }
-        }, React.createElement(IconCloseOutline, { size: 14 })) : null
+        }, React.createElement(IconCloseOutline16, { size: 14 })) : null
       );
     }
 
@@ -977,7 +951,7 @@ window.__ModuleLoader__.load({
             React.createElement('span', { className: 'dsh-trust-fp', title: info.fingerprint }, info.fingerprint || ''),
             React.createElement(Button, {
               variant: 'ghost', size: 'sm', onClick: copyFingerprint,
-              icon: copied ? React.createElement(IconCheckOutline, { size: 14 }) : null
+              icon: copied ? React.createElement(IconCheckOutline16, { size: 14 }) : null
             }, copied ? t('trust.copied') : t('trust.copy'))
           ),
           info.error ? React.createElement(StatusNote, { state: 'error', text: t('trust.error') + ': ' + info.error }) : null,
@@ -985,7 +959,7 @@ window.__ModuleLoader__.load({
             React.createElement(Button, { variant: 'outline', size: 'sm', disabled: info.trusting, onClick: props.onCancel }, t('trust.cancel')),
             React.createElement(Button, {
               variant: 'primary', size: 'sm', disabled: info.trusting,
-              icon: info.trusting ? React.createElement(IconLoadingOutline, { size: 14 }) : null,
+              icon: info.trusting ? React.createElement(IconLoadingOutline16, { size: 14 }) : null,
               onClick: props.onTrust
             }, info.trusting ? t('trust.trusting') : t('trust.trust'))
           )
@@ -1010,7 +984,7 @@ window.__ModuleLoader__.load({
         variant: "outline",
         size: "sm",
         disabled: testing,
-        icon: testing ? React.createElement(IconLoadingOutline, { size: 14 }) : React.createElement(IconRefreshOutline, { size: 14 }),
+        icon: testing ? React.createElement(IconLoadingOutline16, { size: 14 }) : React.createElement(IconRefreshOutline16, { size: 14 }),
         onClick: function () { props.testConnection(id); },
         "data-test-connection": id
       }, testing ? t("testing") : t("test"));
@@ -1028,13 +1002,13 @@ window.__ModuleLoader__.load({
             React.createElement(Button, {
               variant: "ghost",
               size: "sm",
-              icon: React.createElement(IconEditOutline, { size: 14 }),
+              icon: React.createElement(IconEditOutline16, { size: 14 }),
               onClick: function () { props.beginEdit(id); }
             }, t("edit")),
             React.createElement(Button, {
               variant: "ghost",
               size: "sm",
-              icon: React.createElement(IconTrashOutline, { size: 14 }),
+              icon: React.createElement(IconTrashOutline16, { size: 14 }),
               onClick: function () { props.requestDelete(id); }
             }, t("delete"))
           )
@@ -1072,7 +1046,7 @@ window.__ModuleLoader__.load({
         onClick: function (e) { e.stopPropagation(); setOpen(!open); }
       },
         React.createElement("span", { className: "dsh-select-value" }, selected ? selected.label : (placeholder || "")),
-        React.createElement(IconChevronDownOutline, { size: 14, className: "dsh-select-chevron" })
+        React.createElement(IconChevronDownOutline14, { size: 14, className: "dsh-select-chevron" })
       );
       return React.createElement(Menu, {
         open: open,
@@ -1187,7 +1161,7 @@ window.__ModuleLoader__.load({
         React.createElement("div", { className: "dsh-form-actions" },
           React.createElement(Button, {
             variant: "outline", size: "sm", disabled: state.saving || state.formTesting,
-            icon: state.formTesting ? React.createElement(IconLoadingOutline, { size: 14 }) : React.createElement(IconRefreshOutline, { size: 14 }),
+            icon: state.formTesting ? React.createElement(IconLoadingOutline16, { size: 14 }) : React.createElement(IconRefreshOutline16, { size: 14 }),
             onClick: props.testConnectionForm
           }, state.formTesting ? t("testing") : t("test")),
           React.createElement(Button, { variant: "ghost", size: "sm", onClick: props.cancelForm }, t("cancel")),
@@ -1287,7 +1261,7 @@ window.__ModuleLoader__.load({
             state.form ? null : React.createElement(Button, {
               variant: "outline", size: "sm", disabled: !state.writable,
               className: "dsh-add-btn",
-              icon: React.createElement(IconPlusOutline, { size: 14 }),
+              icon: React.createElement(IconPlusOutline16, { size: 14 }),
               onClick: props.beginAdd
             }, t("add"))
           ),
@@ -1317,11 +1291,10 @@ window.__ModuleLoader__.load({
     // priority; lowest renders — dsh-client-ui-slots/lib/index.js:68-73,122).
     // One dialog, two tabs:
     //   local    — simplified local directory browser over the official wire
-    //              face uiWorkspace.listDirectory/createDirectory
-    //              (dsh-client-ui-workspace/lib/client.js UiWorkspaceService).
-    //              Entries are the host-side DIRECTORY children, name-sorted, so
-    //              no client-side sort; showHidden is deliberately omitted
-    //              (simplification).
+    //              face ctx.workspaces.listDirectory/createDirectory
+    //              (dsh-client-runtime/lib/client.js:9956-9988). Entries are the
+    //              host-side DIRECTORY children, name-sorted, so no client-side
+    //              sort; showHidden is deliberately omitted (simplification).
     //   remote   — the remote directory-flow logic (pick host → browse →
     //              createPlaceholder → onPicked(localPath)).
     // Outcome contract: each open reports exactly ONE result. The combined
@@ -1372,7 +1345,7 @@ window.__ModuleLoader__.load({
       var setDraft = draftState[1];
       var scanRef = React.useRef(null);
       // Native fallback: when the host has no browse capability, the local tab
-      // switches to the system dialog (uiWorkspace.pickDirectory). nativeModeRef
+      // switches to the system dialog (ctx.workspaces.pickDirectory). nativeModeRef
       // is owned by the parent and remembered across tab switches / remounts so
       // that listDirectory is not retried repeatedly.
       var nativeModeState = React.useState(false);
@@ -1551,7 +1524,7 @@ window.__ModuleLoader__.load({
             onClick: function () { enter(entry); },
             title: entry.path
           }, React.createElement(React.Fragment, null,
-            React.createElement(IconFolderClose, { size: 14 }),
+            React.createElement(IconFolderClose16, { size: 14 }),
             React.createElement('span', { className: 'dsh-remote-row-name' }, entry.name)));
         }));
       }
@@ -1946,7 +1919,7 @@ window.__ModuleLoader__.load({
             var isDir = entry.type === 'dir';
             var inner = isDir
               ? React.createElement(React.Fragment, null,
-                  React.createElement(IconFolderClose, { size: 14 }),
+                  React.createElement(IconFolderClose16, { size: 14 }),
                   React.createElement('span', { className: 'dsh-remote-row-name' }, entry.name))
               : React.createElement('span', { className: 'dsh-remote-row-name dsh-remote-row-file' }, entry.name);
             return React.createElement(isDir ? 'button' : 'div', {
@@ -2130,7 +2103,7 @@ window.__ModuleLoader__.load({
         // Light loading while unresolved (renders no tab content and never pops the
         // system dialog).
         body = React.createElement('div', { className: 'dsh-remote-empty' },
-          React.createElement(IconLoadingOutline, { size: 14 }), ' ', t('loading'));
+          React.createElement(IconLoadingOutline16, { size: 14 }), ' ', t('loading'));
       } else if (tab === 'local') {
         body = React.createElement(LocalFlowBody, Object.assign({}, shared, {
           onPicked: onPicked,
@@ -2446,56 +2419,29 @@ window.__ModuleLoader__.load({
       var sep = root.indexOf("\\") !== -1 && String(viewCwd).indexOf("/") === -1 ? "\\" : "/";
       return sshNormalizeSegments(root + sep + String(viewCwd));
     }
-    // Bash terminal card derivation. The host's presentCall/presentResult values never
-    // reach the client (dsh-client-ui-tool README: host presentation stays host-local),
-    // so the card is rebuilt from the raw call args plus the rendered result text — the
-    // same derivation the official client tool package performs: shell args →
-    // resolveTerminalCwd → parseExitStatus over the single result text.
-    function sshCallArgs(block) {
-      var done = "kind" in block;
-      var raw = (done ? block.call && block.call.argsRaw : block.argsRaw) ?? "";
-      var parsed = sshParseArgs(raw);
-      return parsed && typeof parsed === "object" ? parsed : {};
-    }
-    // Inverse of the [exit code: N] / [killed by signal: X] markers the shell
-    // renderers append (dsh-shell parseExitStatus): the marker must be the final line,
-    // and it is removed from the body because the card shows the status as its own pill.
-    function sshParseExitStatus(text) {
-      var signal = /\n\[killed by signal: ([^\]\n]+)\]$/.exec(text);
-      if (signal !== null && signal[1] !== void 0) {
-        return { body: text.slice(0, signal.index), signal: signal[1] };
-      }
-      var exit = /\n\[exit code: (\d+)\]$/.exec(text);
-      if (exit !== null && exit[1] !== void 0) {
-        return { body: text.slice(0, exit.index), exitCode: Number(exit[1]) };
-      }
-      return { body: text, exitCode: 0 };
-    }
     function sshTerminalCardModel(block, sessionCwd) {
-      var args = sshCallArgs(block);
-      // Background calls keep the generic row: their "result" is a job id, not a
-      // process status.
-      if (args.run_in_background === true) return null;
-      var command = typeof args.command === "string" ? args.command : "";
-      var description = typeof args.description === "string" ? args.description : void 0;
-      var workdir = typeof args.cwd === "string" ? args.cwd : (typeof args.workdir === "string" ? args.workdir : void 0);
-      var cwd = sshResolveTerminalCwd(workdir, sessionCwd);
+      var call = block.callView && block.callView.card === "terminal" ? block.callView : null;
       if (!("kind" in block)) {
+        if (call === null) return null;
         return {
-          description: description,
-          card: { command: command, cwd: cwd, output: void 0, exitCode: void 0, signal: void 0, running: true }
+          description: call.description,
+          card: {
+            command: call.title,
+            cwd: sshResolveTerminalCwd(call.cwd, sessionCwd),
+            output: void 0, exitCode: void 0, signal: void 0, running: true
+          }
         };
       }
-      if (block.isError) return null;
-      var status = sshParseExitStatus(sshResultText(block));
+      var result = block.resultView && block.resultView.card === "terminal" ? block.resultView : null;
+      if (result === null) return null;
       return {
-        description: description,
+        description: call !== null ? call.description : void 0,
         card: {
-          command: command,
-          cwd: cwd,
-          output: status.body,
-          exitCode: status.exitCode,
-          signal: status.signal,
+          command: result.title ?? (call !== null ? call.title : void 0) ?? "",
+          cwd: call === null ? void 0 : sshResolveTerminalCwd(call.cwd, sessionCwd),
+          output: result.output,
+          exitCode: result.exitCode,
+          signal: result.signal,
           running: false
         }
       };
@@ -2508,7 +2454,6 @@ window.__ModuleLoader__.load({
       return {
         signal: function (signal) { return t("terminal.signal", { signal: signal }); },
         exitCode: function (code) { return t("terminal.exitCode", { code: code }); },
-        noExitCode: t("terminal.noExitCode"),
         running: t("terminal.running"),
         failed: t("terminal.failed"),
         done: t("terminal.done"),
@@ -2524,7 +2469,7 @@ window.__ModuleLoader__.load({
     function sshLeadingFor(state) {
       if (state === "error") return React.createElement(primitives.StateDot, { state: "error" });
       if (state === "stopped") return React.createElement(primitives.StateDot, { state: "warning" });
-      return React.createElement(IconApiOutline, { size: 14 });
+      return React.createElement(primitives.IconApiOutline14, { size: 14 });
     }
     function sshStateStatus(state, t) {
       if (state === "running") return t("bash.running");
@@ -2567,11 +2512,11 @@ window.__ModuleLoader__.load({
       };
       var leading;
       if (open) {
-        leading = React.createElement(IconChevronDownOutline, { className: SSH_BASH_CSS.chevron });
+        leading = React.createElement(primitives.IconChevronDownOutline14, { className: SSH_BASH_CSS.chevron });
       } else if (expandable) {
         leading = React.createElement(React.Fragment, null,
           React.createElement("span", { className: SSH_BASH_CSS.iconIdle }, sshLeadingFor(state)),
-          React.createElement(IconChevronDownOutline, { className: sshCx(SSH_BASH_CSS.chevron, SSH_BASH_CSS.chevronHover) }));
+          React.createElement(primitives.IconChevronDownOutline14, { className: sshCx(SSH_BASH_CSS.chevron, SSH_BASH_CSS.chevronHover) }));
       } else {
         leading = sshLeadingFor(state);
       }
@@ -2618,7 +2563,7 @@ window.__ModuleLoader__.load({
         if (inspect !== void 0) {
           bodyNode = React.createElement(React.Fragment, null, bodyNode,
             React.createElement("button", { type: "button", className: SSH_BASH_CSS.inspectButton, onClick: inspect },
-              React.createElement(IconInspectOutline, null), "Inspect"));
+              React.createElement(primitives.IconInspectOutline12, null), "Inspect"));
         }
       }
       return React.createElement("div", { className: SSH_BASH_CSS.card },
@@ -2627,10 +2572,7 @@ window.__ModuleLoader__.load({
     }
 
     // ---------- registration ----------
-    // "workspaces" (the Workspace Controller client face) is deliberately absent:
-    // the local directory trio is resolved from whichever face provides it at call
-    // time (localCall below), so the plugin still loads where only one face exists.
-    var inject = ["slots", "locale", "remote"];
+    var inject = ["slots", "workspaces", "locale", "remote"];
 
     function apply(ctx) {
       ctx.effect(function () {
@@ -2664,11 +2606,8 @@ window.__ModuleLoader__.load({
       ctx.effect(function () {
         var refresh = function () { controller.load(); };
         var disposers = [
-          // Any settings form change is worth re-reading the host list: the event
-          // carries the changed Loader row id, which is a mount choice this bundle
-          // does not know (an aggregate may mount the package under its own id), and
-          // the re-read is a single cheap call.
-          ctx.remote.$on("settings/document-updated", function () {
+          ctx.remote.$on("settings/document-updated", function (ns) {
+            if (ns !== HOSTS_NS) return;
             refresh();
           }),
           ctx.on("connection/reset", refresh),
@@ -2751,11 +2690,8 @@ window.__ModuleLoader__.load({
       // dsh-client-ui-directory-picker-browse/lib/client.js:1026-1035).
       // remoteCall guards a not-yet-mounted ctx.remote.ssh (the $mount above is
       // async) by rejecting instead of throwing synchronously. The local tab's
-      // listDirectory/createDirectory/pickDirectory ride the uiWorkspace client
-      // service (dsh-client-ui-workspace/lib/client.js UiWorkspaceService), which
-      // is where the directory trio lives now; the Workspace Controller face
-      // ctx.workspaces carries only create/rename/delete/list
-      // (dsh-api-workspace-controller/lib/client.js WorkspaceController).
+      // listDirectory/createDirectory ride the official client cable service
+      // ctx.workspaces (dsh-client-runtime/lib/client.js:9956-9988).
       var remoteCall = function (name) {
         return function () {
           var args = Array.prototype.slice.call(arguments);
@@ -2766,28 +2702,6 @@ window.__ModuleLoader__.load({
           return ssh[name].apply(ssh, args);
         };
       };
-      // Resolve the local directory face by name at call time through ctx.get (the
-      // inject-free service read, cordis reflect.get) so both faces keep working
-      // across DSH builds, and a provider that is not mounted yet reports a
-      // readable error instead of "<face>.<method> is not a function".
-      var localDirectoryFace = function () {
-        var names = ['uiWorkspace', 'workspaces'];
-        for (var i = 0; i < names.length; i += 1) {
-          var service = ctx.get(names[i]);
-          if (service && typeof service.listDirectory === 'function') return service;
-        }
-        return null;
-      };
-      var localCall = function (name) {
-        return function () {
-          var args = Array.prototype.slice.call(arguments);
-          var face = localDirectoryFace();
-          if (!face || typeof face[name] !== 'function') {
-            return Promise.reject(new Error('workspace directory service unavailable: uiWorkspace.' + name + ' is not mounted'));
-          }
-          return face[name].apply(face, args);
-        };
-      };
       var injectedFlow = function () {
         return {
           listHosts: remoteCall('listHosts'),
@@ -2795,12 +2709,12 @@ window.__ModuleLoader__.load({
           resolveRemoteHome: remoteCall('resolveRemoteHome'),
           createPlaceholder: remoteCall('createPlaceholder'),
           trustHostKey: remoteCall('trustHostKey'),
-          listDirectory: localCall('listDirectory'),
-          createDirectory: localCall('createDirectory'),
+          listDirectory: function (path, signal) { return ctx.workspaces.listDirectory(path, signal); },
+          createDirectory: function (path, name) { return ctx.workspaces.createDirectory(path, name); },
           // Native fallback: when the host has no browse capability, pop the system
-          // dialog via the official native picker (the same path the official native
-          // picker uses: it resolves the trio through uiWorkspace.pickDirectory).
-          pickDirectory: localCall('pickDirectory'),
+          // dialog via the official native picker (dsh-client-runtime/lib/client.js:
+          // 9954-9958, the same path the official native picker uses).
+          pickDirectory: function () { return ctx.workspaces.pickDirectory(); },
           t: ctx.locale.bind("workspace.ssh"),
         };
       };

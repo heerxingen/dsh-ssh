@@ -3,8 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { apply } from '../tools.js';
-import { startRemoteBackground } from '../tools/bash.js';
-import { mapRemoteToLocal, routeByCwd } from '../src/router.js';
+import { mapRemoteToLocal } from '../src/router.js';
 import { SshError, SftpWrapper } from '../src/ssh-core.js';
 
 process.env.DSH_SSH_REMOTE_ROOT = '/tmp/dsh-ssh-test-remote-root';
@@ -58,7 +57,7 @@ function makeCtx({ hosts = {}, sshPool, attachments, jobs } = {}) {
     fs: { sandboxMode: undefined },
     get(key) {
       if (key === 'sshPool') return sshPool;
-      if (key === 'settings') return { describe: () => [{ ns: '@dsh-ssh/dsh-ssh', value: { hosts } }] };
+      if (key === 'settings') return { get: () => ({ hosts }) };
       if (key === 'attachments') return attachments;
       if (key === 'jobs') return jobs;
       return undefined;
@@ -70,9 +69,7 @@ function makeCtx({ hosts = {}, sshPool, attachments, jobs } = {}) {
 
 function makeExec(hostId, remotePath) {
   const cwd = mapRemoteToLocal(hostId, remotePath);
-  // agent.id is the session id: it is what jobs.start takes as the job owner and
-  // what job_output/job_list/job_kill use to reach the job.
-  return { agent: { id: 'session-1', session: { header: { cwd } } }, signal: undefined };
+  return { agent: { session: { header: { cwd } } }, signal: undefined };
 }
 
 function makePool({ sftp, execImpl }) {
@@ -132,79 +129,30 @@ test('remote bash run_in_background → clear error when jobs service unavailabl
   );
 });
 
-// Dynamic in-memory sftp for background jobs: the log/status paths carry a random
-// per-job token, so contents are resolved by suffix instead of by exact path.
-function makeSuffixSftp(bySuffix) {
-  return {
-    open(p, flags, cb) { cb(null, { p }); },
-    read(handle, target, off, len, position, cb) {
-      const data = Buffer.from(bySuffix(handle.p) ?? '', 'utf8');
-      const n = Math.max(0, Math.min(len, data.length - position));
-      if (n > 0) data.copy(target, off, position, position + n);
-      cb(null, n, target, position + n);
-    },
-    close(handle, cb) { cb(null); },
-    unlink(p, cb) { cb(null); },
+test('remote bash run_in_background -> {kind:background, jobId} via jobs.start; run() returns controller contract', async () => {
+  const { pool } = makePool({}); // execImpl defaults to hi\n (spawn pid parse fails but jobs.start returns id synchronously)
+  const jobs = {
+    calls: [],
+    start(spec) { this.calls.push(spec); return 'bash-1'; },
   };
-}
-
-// Fake connection + explicit acquirer for startRemoteBackground: background-job
-// wiring is exercised without host-settings resolution, so no SSH host is needed.
-function makeBgAcquire({ execImpl, sftp }) {
-  const conn = {
-    hostId: 'h1',
-    exec: execImpl,
-    sftp: async () => new SftpWrapper({ hostId: 'h1' }, sftp),
-    fs: async () => new SftpWrapper({ hostId: 'h1' }, sftp),
-  };
-  const pool = { acquire: async () => conn, release: () => {} };
-  return { conn, pool, acquireRemote: async () => ({ pool, conn }) };
-}
-
-function makeJobsStub(id) {
-  return { calls: [], start(spec) { this.calls.push(spec); return id; } };
-}
-
-test('startRemoteBackground: owner passed to jobs.start is the session id, not the agent object', async () => {
-  const { acquireRemote } = makeBgAcquire({ execImpl: async () => ({ code: 0, signal: null, stdout: 'hi\n', stderr: '' }), sftp: makeSuffixSftp(() => undefined) });
-  const jobs = makeJobsStub('bash-1');
-  const ctx = { get: (key) => (key === 'jobs' ? jobs : undefined) };
-  const exec = makeExec('h1', '/data/work');
-  const route = routeByCwd(exec.agent.session.header.cwd);
-  const out = await startRemoteBackground(ctx, exec, { command: 'sleep 10' }, route, acquireRemote, undefined);
-  assert.deepEqual(out, { kind: 'background', jobId: 'bash-1' });
+  const ctx = makeCtx({
+    hosts: { h1: { id: 'h1', host: '203.0.113.10', user: 'u', auth: { type: 'key' } } },
+    sshPool: pool,
+    jobs,
+  });
+  apply(ctx);
+  const out = await getTool(ctx, 'bash').execute({ command: 'sleep 10', description: 'x', run_in_background: true }, makeExec('h1', '/data/work'));
+  assert.equal(out.kind, 'background');
+  assert.equal(out.jobId, 'bash-1');
   assert.equal(jobs.calls.length, 1);
   assert.equal(jobs.calls[0].kind, 'bash');
-  assert.equal(jobs.calls[0].label, 'sleep 10');     // matches official tool-bash: label=command
-  assert.equal(jobs.calls[0].owner, 'session-1');    // the session id, never the agent object
+  assert.equal(jobs.calls[0].label, 'sleep 10'); // matches official tool-bash: label=command
   assert.equal(typeof jobs.calls[0].run, 'function');
-  const hooks = jobs.calls[0].run(undefined);        // the registry always passes a handle
+  assert.ok(jobs.calls[0].owner); // exec.agent passed as owner
+  const hooks = jobs.calls[0].run();
   assert.equal(typeof hooks.cancel, 'function');
   assert.equal(typeof hooks.done.then, 'function');
-  await hooks.done.catch(() => {});                  // spawn pid is unparseable here -> job fails, no timers left
-});
-
-test('startRemoteBackground: run(job) publishes remote log output through the job handle', async () => {
-  const execImpl = async (cmd) => {
-    if (/^setsid /.test(cmd)) return { code: 0, signal: null, stdout: '4242\n', stderr: '' };
-    if (/^kill -0 /.test(cmd)) return { code: 0, signal: null, stdout: 'DEAD\n', stderr: '' };
-    return { code: 0, signal: null, stdout: '', stderr: '' };
-  };
-  const sftp = makeSuffixSftp((p) => (p.endsWith('.status') ? '0\n' : p.endsWith('.log') ? 'remote-out\n' : undefined));
-  const { acquireRemote } = makeBgAcquire({ execImpl, sftp });
-  const jobs = makeJobsStub('bash-7');
-  const ctx = { get: (key) => (key === 'jobs' ? jobs : undefined) };
-  const exec = makeExec('h1', '/data/work');
-  const route = routeByCwd(exec.agent.session.header.cwd);
-  const out = await startRemoteBackground(ctx, exec, { command: 'echo remote-out' }, route, acquireRemote, undefined);
-  assert.equal(out.jobId, 'bash-7');
-  const appended = [];
-  const hooks = jobs.calls[0].run({ append: (text) => appended.push(text) });
-  assert.deepEqual(Object.keys(hooks), ['cancel', 'done']);
-  const outcome = await hooks.done;
-  assert.equal(outcome.status, 'completed');
-  assert.equal(outcome.detail, 'exit code: 0');
-  assert.deepEqual(appended, ['remote-out\n']); // the log reached the job's output ring
+  assert.equal(typeof hooks.readOutput, 'function');
 });
 
 // ═══ read ═══
