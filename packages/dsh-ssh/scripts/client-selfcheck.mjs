@@ -84,6 +84,25 @@ assert.ok(code.includes('ctx.slots.inject("conversation.hero.workspace.directory
 assert.ok(code.includes('ctx.slots.inject("sidebar.workspaces.directoryFlow"'), 'nested slots.inject pattern expected for sidebar hole');
 assert.ok(code.includes('ctx.locale.register("workspace.ssh"'), 'workspace.ssh locale must be registered');
 
+// Icons must go through the current-then-legacy resolver: DSH 0.1.7 renamed the
+// size-suffixed atoms (IconPlusOutline16) to size-neutral glyphs
+// (IconPlusOutlineRegular/…Medium) with the same {size, className} props. A
+// hard-coded name is undefined in the other generation, and
+// React.createElement(undefined) takes the whole surface down — the directory-flow
+// panel and the settings section both broke that way on 0.1.7.
+assert.ok(code.includes('function resolveIcon(current, legacy)'), 'client.js must declare the icon resolver');
+assert.equal(/primitives\.Icon/.test(code), false, 'client.js must resolve icons through resolveIcon, never read primitives.Icon* directly');
+const iconPairs = [...code.matchAll(/resolveIcon\("([A-Za-z0-9]+)",\s*"([A-Za-z0-9]+)"\)/g)];
+assert.equal(iconPairs.length, 12, 'the icon resolver table must cover all 12 renamed glyphs');
+for (const [, current, legacy] of iconPairs) {
+  assert.ok(current.endsWith('Regular'), 'current icon name must be the 0.1.7 *Regular glyph: ' + current);
+  assert.ok(/(?:Medium|16|14|12)$/.test(legacy), 'legacy icon name must keep its size suffix: ' + legacy);
+}
+for (const line of code.replace(/resolveIcon\("[A-Za-z0-9]+",\s*"[A-Za-z0-9]+"\)/g, '').split('\n')) {
+  if (line.trimStart().startsWith('//')) continue;
+  assert.equal(/Icon[A-Za-z]+(?:Outline|Fill)?1[0-9]\b/.exec(line), null, 'stale size-suffixed icon identifier in code: ' + line.trim());
+}
+
 console.log('client.js static self-check OK');
 console.log('  id =', loaded.id);
 console.log('  inject =', JSON.stringify(mod.inject));
