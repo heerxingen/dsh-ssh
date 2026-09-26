@@ -10,7 +10,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dsh-ssh/dsh-ssh.git"
+    "url": "git+https://github.com/heerxingen/dsh-ssh.git"
   },
   "scripts": {
     "plugin:add": "dsh plugin --profile dsh-ssh-dev add ./packages/dsh-ssh",
