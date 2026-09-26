@@ -123,12 +123,12 @@ test('hook: remote cwd with no systemPrompt service → no throw, no registratio
 test('resolveHostLabel returns null without settings or unknown host', () => {
   assert.equal(resolveHostLabel(null, HOST_ID), null);
   assert.equal(resolveHostLabel({}, HOST_ID), null);
-  // settings.get throwing → fallback to null
-  const bad = { settings: { get: () => { throw new Error('x'); } } };
+  // settings form throwing → fallback to null
+  const bad = { get: () => ({ describe: () => { throw new Error('x'); } }) };
   assert.equal(resolveHostLabel(bad, HOST_ID), null);
 });
 
-test('resolveHostLabel resolves display name from dsh-ssh-hosts when available', () => {
-  const ctx = { settings: { get: (ns) => ns === 'dsh-ssh-hosts' ? { hosts: { [HOST_ID]: { name: '我的工作站' } } } : null } };
-  assert.equal(resolveHostLabel(ctx, HOST_ID), '我的工作站 (' + HOST_ID + ')');
+test('resolveHostLabel resolves the display name from the plugin settings row', () => {
+  const settings = { describe: () => [{ ns: '@dsh-ssh/dsh-ssh', value: { hosts: { [HOST_ID]: { name: '我的工作站' } } } }] };
+  assert.equal(resolveHostLabel({ get: () => settings }, HOST_ID), '我的工作站 (' + HOST_ID + ')');
 });
