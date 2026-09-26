@@ -45,7 +45,7 @@ dsh-ssh/
     ├── src/                         # 9 个 js（exec-fs.js / placeholder.js / policy.js / remote-jobs.js / remote.js / router.js / search.js / settings.js / ssh-core.js）
     ├── lib/                         # 2 个纯模型（hosts-model.js / typert-contribution.js）
     ├── scripts/                     # 11 个脚本（bench.mjs / build-readme.mjs / client-selfcheck.mjs / e2e-web-3080.mjs / functional-live-test.mjs / live-smoke.mjs / sandbox-live-verify.mjs / tools-live-smoke.mjs / verify-agent-created.mjs / verify-execfs-fallback.mjs / verify-remote-bg-created.mjs）
-    ├── test/                        # 单测（21 个 *.test.js + live-config.mjs）
+    ├── test/                        # 单测（24 个 *.test.js + live-config.mjs）
     └── README.md                    # 产品页（面向用户）
 ```
 
