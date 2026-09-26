@@ -1,19 +1,24 @@
 // @dsh-ssh/dsh-ssh — DeepSeek Harness SSH remote workspace plugin (host half).
-// Provides the sshPool service (SshPool over ssh2), registers the dsh-ssh-hosts
-// settings namespace for SSH host configuration, and exposes ssh/testConnection
-// over the official Typert gateway for the settings-page "test connection" button
-// (the UI lives client-side).
+// Provides the sshPool service (SshPool over ssh2), owns the SSH host settings form
+// on this plugin's Loader row, and exposes ssh/testConnection over the official
+// Typert gateway for the settings-page "test connection" button (the UI lives
+// client-side).
 import { Service } from '@deepseek-ai/cordis';
 import os from 'node:os';
 import path from 'node:path';
 import { rm } from 'node:fs/promises';
 import { SshPool } from './src/ssh-core.js';
-import { registerSettings, readHostsDoc } from './src/settings.js';
+import { Config, storedHosts } from './src/settings.js';
 import { registerRemote } from './src/remote.js';
 import { routeByCwd } from './src/router.js';
 import { registerRoutedTools, ROUTED_TOOL_NAMES } from './tools.js';
 
 export const name = '@dsh-ssh/dsh-ssh';
+
+// This plugin's Loader row schema (see src/settings.js): deployment tuning plus the
+// user-editable host dict. The settings service reads the row's schema from here — a
+// row whose module exports no Config has no settings form at all.
+export { Config };
 
 // Cordis Service: super(ctx, 'sshPool') registers ctx.sshPool on this fiber.
 export class SshPoolService extends Service {
@@ -176,9 +181,7 @@ export function injectCapabilitySurface(agent, route, opts = {}) {
 export function resolveHostLabel(ctx, hostId) {
   if (!hostId || !ctx) return null;
   try {
-    const get = ctx.settings && typeof ctx.settings.get === 'function' ? (ns) => ctx.settings.get(ns) : null;
-    if (!get) return null;
-    const { hosts } = readHostsDoc(get);
+    const hosts = storedHosts(ctx);
     const entry = hosts[hostId];
     return (entry && typeof entry.name === 'string' && entry.name) ? (entry.name + ' (' + hostId + ')') : null;
   } catch {
@@ -248,12 +251,9 @@ export function apply(ctx, config = {}) {
   const svc = new SshPoolService(ctx, config);
   // Pool disposal follows the plugin fiber teardown (Service registration is removed with the fiber).
   ctx.effect(() => () => svc.pool.dispose());
-  ctx.inject(['settings'], (settingsCtx) => {
-    registerSettings(settingsCtx);
-  });
-  // Host-side Typert endpoint for the settings-page "test connection" (injects typert/settings itself).
+  // Host-side Typert endpoint + this plugin's settings form (injects typert/settings itself).
   registerRemote(ctx, svc);
   installPlaceholderCleanup(ctx);
   installToolRoutingHook(ctx);
-  ctx.logger.info('[@dsh-ssh/dsh-ssh] loaded: sshPool service (maxConnections=' + (config.maxConnections ?? 4) + ') + settings dsh-ssh-hosts + remote ssh/* + placeholder cleanup + agent/created tool routing');
+  ctx.logger.info('[@dsh-ssh/dsh-ssh] loaded: sshPool service (maxConnections=' + (config.maxConnections ?? 4) + ') + settings form on this plugin row + remote ssh/* + placeholder cleanup + agent/created tool routing');
 }

@@ -48,12 +48,15 @@ export const TRUST_HOST_KEY_ENDPOINT = REMOTE_NAMESPACE + '/' + TRUST_HOST_KEY_M
 
 const SRC_JSON = { mode: 'src-json' };
 
-/** Identity JSON schema satisfying the strict-codec contract. */
+/**
+ * Identity strict codec: create() materializes the boundary schema on first use
+ * (TypertSchema = { parse }), which is what the registry validates and decodes with.
+ */
 function passthroughSchema(typeSymbol) {
   return {
     mode: 'strict',
     typeSymbol,
-    schema: { parse: (value) => value },
+    create: () => ({ parse: (value) => value }),
   };
 }
 
@@ -191,7 +194,10 @@ export function assertContributionShape(contribution) {
     }
     if (codec.mode !== 'strict') throw new Error('typert: ' + subject + ' has unknown codec mode');
     if (typeof codec.typeSymbol !== 'string' || codec.typeSymbol.length === 0) throw new Error('typert: ' + subject + ' strict codec needs typeSymbol');
-    if (!codec.schema || typeof codec.schema.parse !== 'function') throw new Error('typert: ' + subject + ' strict codec has no parse()');
+    // Strict codecs materialize through create() → TypertSchema ({ parse }); the
+    // registry validates this before mounting a client contribution
+    // (dsh-typert-registry validateCodec: 'strict codec has no create() factory').
+    if (typeof codec.create !== 'function') throw new Error('typert: ' + subject + ' strict codec has no create() factory');
   };
   const endpoints = new Set();
   const ids = new Set();
@@ -235,7 +241,7 @@ export function assertContributionShape(contribution) {
 /** True when a client descriptor carries strict codecs everywhere (used by tests). */
 export function allClientCodecsStrict(descriptors) {
   return descriptors.every((d) => {
-    const ok = (c) => c && c.mode === 'strict' && typeof c.schema?.parse === 'function';
+    const ok = (c) => c && c.mode === 'strict' && typeof c.create === 'function';
     return ok(d.result) && d.parameters.every((p) => ok(p.codec)) && (d.invocation.kind !== 'context' || ok(d.invocation.codec));
   });
 }
@@ -263,26 +269,31 @@ export function remoteResponseError(response, fallback) {
 }
 
 /**
- * Detect a missing directory-browsing capability. When the host-side composed
- * directory picker serves only the "native" capability, host.listDirectory /
- * host.createDirectory return
- *   { code: "directory-picker-unavailable",
- *     message: 'host.listDirectory needs the browse capability; the composed picker serves "native"',
- *     details: { capability: "native" } }
- * (dsh-host-apiproxy/lib/index.js:3174-3204); the client-side
- * ctx.uiWorkspace.listDirectory/createDirectory wrap them as DirectoryBrowseError
- * (err.rpcError carries that business code, err.message is prefixed
- * "directory browse failed:"). Matches the business code or the host message
- * "needs the browse capability" — the trigger for the native-dialog fallback.
- * Kept in sync with the inline copy in client.js.
+ * Detect a missing directory-browsing capability, i.e. "this host can only open its
+ * own OS folder dialog, so the local tab must fall back to uiWorkspace.pickDirectory".
+ *
+ * Two host generations answer differently:
+ *   - pre-0.1.7: the pickup refused listing with the business code
+ *     "directory-picker-unavailable" and the message "needs the browse capability"
+ *     (wrapped client-side as DirectoryBrowseError carrying err.rpcError);
+ *   - 0.1.7: the picker exposes listing only when the mounted backend is "browse"
+ *     (dsh-host-directory-picker capability seam). A "native"-only host therefore
+ *     fails the listing call at the RPC layer (no such endpoint) instead of
+ *     answering with a directory business code.
+ *
+ * A directory BUSINESS failure always carries a "directory-*" code (e.g.
+ * "directory-unreadable"), so any other RPC code on a listing call means the host
+ * could not serve the listing at all. Kept in sync with the inline copy in client.js.
  */
 export function isBrowseCapabilityError(err) {
   if (!err || typeof err !== 'object') return false;
   const rpc = err.rpcError && typeof err.rpcError === 'object' ? err.rpcError : null;
-  if (rpc && rpc.code === 'directory-picker-unavailable') return true;
+  const code = rpc && typeof rpc.code === 'string' ? rpc.code : '';
+  if (code === 'directory-picker-unavailable') return true;
   const rpcMsg = rpc && typeof rpc.message === 'string' ? rpc.message : '';
   const errMsg = typeof err.message === 'string' ? err.message : '';
-  return rpcMsg.indexOf('needs the browse capability') !== -1
-    || errMsg.indexOf('needs the browse capability') !== -1;
+  if (rpcMsg.indexOf('needs the browse capability') !== -1) return true;
+  if (errMsg.indexOf('needs the browse capability') !== -1) return true;
+  return code !== '' && code.indexOf('directory-') !== 0;
 }
 

@@ -8,9 +8,10 @@
 //   - ctx.typert.register(HOST_TYPERT_CONTRIBUTION): strict descriptors so the
 //     gateway claims /api/ssh/{testConnection,listHosts,saveHost,deleteHost}
 //     (claimsEndpoint) and dispatches to ctx.get('ssh').<method>(...).
-// The unredacted stored hosts come from ctx.settings.get('dsh-ssh-hosts') so a
-// password-auth host can be tested/saved even when the form left the password
-// blank; listHosts redacts before the value leaves the process.
+// The unredacted stored hosts come from this plugin's settings form value
+// (ctx.settings.describe() → the row's live config) so a password-auth host can be
+// tested/saved even when the form left the password blank; listHosts redacts before
+// the value leaves the process.
 import { Service } from '@deepseek-ai/cordis';
 import { bindTypertRemote } from '@deepseek-ai/dsh-typert-protocol';
 import { SshError, HOST_KEY_UNKNOWN_STAGE, sshKeyFingerprint, sshKeyTypeFromBlob, appendKnownHost, defaultKnownHostsPath } from './ssh-core.js';
@@ -18,7 +19,7 @@ import { createPlaceholderDir, hostDisplayName, placeholderWorkspaceTitle } from
 import { encodeRemotePath } from './router.js';
 import { HOST_TYPERT_CONTRIBUTION, REMOTE_SERVICE, assertContributionShape } from '../lib/typert-contribution.js';
 import { mergeTestConfig, mergeHostPatch, validateHostConfig, formatHostErrors, redactHosts, hostsSecretsList } from '../lib/hosts-model.js';
-import { HOSTS_NAMESPACE, readHostsDoc } from './settings.js';
+import { hostsOf, HOSTS_KEY, HOST_ENTRY_FALLBACK_ID, resolveOwnEntryId } from './settings.js';
 
 // ── TOFU host-side structured error surface ────────────────────────────────
 // The gateway (dsh-api-gateway) serializes only the message of a thrown error
@@ -85,18 +86,19 @@ export class SshRemoteService extends Service {
     this.resolveWorkspaceRegistry = typeof fn === 'function' ? fn : () => undefined;
   }
 
-  /** Current hosts state: resolved dict (UNREDACTED, dsh-ssh-hosts → dsh-ssh-hosts read fallback), scope revision, writability. */
+  /** Current hosts state: the row's live hosts dict (UNREDACTED), form revision, writability. */
   readState() {
     const api = this.settingsApi;
-    const { hosts } = readHostsDoc(api && typeof api.get === 'function' ? (ns) => api.get(ns) : null);
-    let revision = 0;
+    let descriptor;
     try {
-      const desc = api?.describe?.() ?? [];
-      const found = Array.isArray(desc) ? desc.find((d) => d && d.ns === HOSTS_NAMESPACE) : undefined;
-      if (found && typeof found.revision === 'number') revision = found.revision;
+      descriptor = api && typeof api.describe === 'function' && api.id
+        ? (api.describe() ?? []).find((row) => row && row.ns === api.id)
+        : undefined;
     } catch {
-      revision = 0;
+      descriptor = undefined;
     }
+    const hosts = hostsOf(descriptor && descriptor.value);
+    const revision = descriptor && typeof descriptor.revision === 'number' ? descriptor.revision : 0;
     let writable = true;
     try { writable = api ? !!api.writable : true; } catch { writable = true; }
     return { hosts, revision, writable };
@@ -162,12 +164,13 @@ export class SshRemoteService extends Service {
     const next = mergeHostPatch(hosts[hostId], patch, hostId);
     const checked = validateHostConfig(next);
     if (!checked.ok) throw new Error('saveHost: 主机配置无效 (' + formatHostErrors(checked.errors) + ')');
-    // Full write: commit the entire validated host dict (including hosts still only in
-    // the legacy namespace) as one atomic set into the new namespace, so the first edit
-    // loses no already-configured host during the dssh-hosts → dsh-ssh-hosts rename.
+    // Full write: commit the entire validated host dict as one atomic set into this
+    // plugin's settings form, so a removal or an edit never leaves the stored dict
+    // half-updated. The whole dict is written because the host set is user data the
+    // form replaces wholesale.
     const nextHosts = { ...hosts, [hostId]: next };
     try {
-      await api.mutate(HOSTS_NAMESPACE, [{ op: 'set', path: ['hosts'], value: nextHosts }], revision);
+      await api.mutate(api.id, [{ op: 'set', path: [HOSTS_KEY], value: nextHosts }], revision);
     } catch (error) {
       throw this.wrapWriteError(error, '保存主机');
     }
@@ -175,9 +178,9 @@ export class SshRemoteService extends Service {
   }
 
   /**
-   * Delete one host entry (settings mutate unset of ['hosts', id]). Missing
-   * ids are idempotent. revision is the same optimistic-concurrency guard as
-   * saveHost. @returns { ok: true }
+   * Delete one host entry (one set-op over the whole hosts dict). Missing ids are
+   * idempotent. revision is the same optimistic-concurrency guard as saveHost.
+   * @returns { ok: true }
    */
   async deleteHost(id, revision) {
     const hostId = id != null ? String(id) : '';
@@ -189,7 +192,7 @@ export class SshRemoteService extends Service {
     const nextHosts = { ...hosts };
     delete nextHosts[hostId];
     try {
-      await api.mutate(HOSTS_NAMESPACE, [{ op: 'set', path: ['hosts'], value: nextHosts }], revision);
+      await api.mutate(api.id, [{ op: 'set', path: [HOSTS_KEY], value: nextHosts }], revision);
     } catch (error) {
       throw this.wrapWriteError(error, '删除主机');
     }
@@ -375,28 +378,46 @@ export class SshRemoteService extends Service {
 
 /**
  * Register the remote service + typert contribution on a host ctx that already
- * owns the sshPool service. The typert registry and settings provider are
+ * owns the sshPool service. The typert registry and the settings forms service are
  * reached through ctx.inject so activation never blocks on them.
  */
 export function registerRemote(ctx, sshPool) {
   const service = new SshRemoteService(ctx, sshPool);
   ctx.inject(['typert', 'settings'], (scope) => {
-    service.setSettingsApi(scope.settings);
+    const settings = scope.settings;
+    // Host CRUD addresses THIS plugin's settings form, whose id is the Loader row
+    // that mounted the package; the bundle patch's id is the fallback for a loader
+    // that does not expose its rows.
+    const entryId = resolveOwnEntryId(ctx, '@dsh-ssh/dsh-ssh') ?? HOST_ENTRY_FALLBACK_ID;
+    service.setSettingsApi({
+      id: entryId,
+      // Reads take the UNREDACTED form value: a stored password must be usable for
+      // test-connection and for the write-only "blank keeps it" save semantics.
+      describe: () => settings.describe(),
+      mutate: (ns, ops, revision) => settings.mutate(ns, ops, revision),
+      get writable() { return settings.writable === true; },
+    });
     service.setStoredResolver((id) => {
       if (!id) return undefined;
       try {
-        const { hosts } = readHostsDoc((ns) => scope.settings.get(ns));
-        return hosts[id] ?? undefined;
+        return service.readState().hosts[id] ?? undefined;
       } catch {
         return undefined;
       }
     });
+    // This plugin ships its own SSH settings section, so the generated form for its
+    // row is opted out — otherwise Settings would render the host dict twice.
+    ctx.effect(
+      () => settings.configure({ auto: false }, ctx.fiber),
+      '@dsh-ssh/dsh-ssh: settings form policy',
+    );
     // Fail fast on a malformed contribution instead of a silent gateway miss.
     assertContributionShape(HOST_TYPERT_CONTRIBUTION);
     scope.typert.register(HOST_TYPERT_CONTRIBUTION);
     scope.logger?.info('[@dsh-ssh/dsh-ssh] typert remote ' + HOST_TYPERT_CONTRIBUTION.package
       + ' registered (ssh/testConnection, ssh/listHosts, ssh/saveHost, ssh/deleteHost,'
-      + ' ssh/listRemoteDir, ssh/statRemote, ssh/resolveRemoteHome, ssh/createPlaceholder, ssh/trustHostKey)');
+      + ' ssh/listRemoteDir, ssh/statRemote, ssh/resolveRemoteHome, ssh/createPlaceholder, ssh/trustHostKey)'
+      + ' + settings form ' + entryId);
   });
   return service;
 }

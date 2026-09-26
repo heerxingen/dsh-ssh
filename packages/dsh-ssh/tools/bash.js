@@ -128,8 +128,11 @@ export async function startRemoteBackground(ctx, exec, args, route, acquireRemot
     const jobId = jobs.start({
       kind: 'bash',
       label: args.command,
-      ...exec.agent ? { owner: exec.agent } : {},
-      run: () => createRemoteBashJobHooks({
+      // The owner is the session id: the registry resolves it to the live Agent for
+      // lifetime/teardown and fences job_output/job_list/job_kill by that same id.
+      ...exec.agent ? { owner: exec.agent.id } : {},
+      run: (job) => createRemoteBashJobHooks({
+        job,
         conn,
         cmd: args.command,
         cwd: route.remoteCwd,

@@ -85,18 +85,23 @@ try {
   check('fallback big-file write+read chunked roundtrip (600KB)', eqBuf(await fsF.readBytes(REMOTE + '/big.bin'), big));
 
   const marker = REMOTE + '/job-marker.txt';
+  // The job registry owns the output ring; the hooks publish each polled delta into
+  // the handle they receive, so this script collects them the same way.
+  let published = '';
+  const jobHandle = { append: (text) => { published += text; } };
   const hooks = createRemoteBashJobHooks({
+    job: jobHandle,
     conn: connF,
     cmd: 'echo TICK-1; echo TICK-2; sleep 0.8; echo DONE; printf "MARKER-OK\\n" > ' + shellQuoteSingle(marker),
     cwd: REMOTE, hostId: 'fb', jobDir: JOB_DIR, pollMs: 150,
   });
   await hooks._spawned;
-  await new Promise((r) => setTimeout(r, 400)); // process still alive, log already contains TICK-* -> verify mid-run incremental fetch
+  await new Promise((r) => setTimeout(r, 400)); // process still alive, log already contains TICK-* -> verify mid-run incremental publish
   await hooks._refresh();
-  const liveOut = hooks.readOutput();
+  const midRun = published;
   const doneRes = await hooks.done;
   check('fallback background job completed', doneRes && doneRes.status === 'completed', JSON.stringify(doneRes));
-  check('fallback live output pulled via execfs (mid-run)', /TICK-1/.test(liveOut) && /TICK-2/.test(liveOut), JSON.stringify(liveOut));
+  check('fallback live output published via execfs (mid-run)', /TICK-1/.test(midRun) && /TICK-2/.test(midRun), JSON.stringify(midRun));
   // Final persistent data read back via execfs (marker written by the job), proving degraded reads work both during and after the job lifetime
   const markerText = await fsF.readText(marker).catch(() => '');
   check('fallback post-job persistent read (marker)', markerText.trim() === 'MARKER-OK', JSON.stringify(markerText));

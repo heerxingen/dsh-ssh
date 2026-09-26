@@ -82,7 +82,7 @@ dsh plugin --profile web add @dsh-ssh/dsh-ssh
 
 ```bash
 cd packages/dsh-ssh
-node --test test/*.test.js     # 基线: 295 tests, pass 295, fail 0
+node --test test/*.test.js     # 基线: 318 tests, pass 318, fail 0
 ```
 
 ### CI（GitHub Actions）
@@ -167,7 +167,7 @@ node packages/dsh-ssh/scripts/e2e-web-3080.mjs
 ```bash
 pnpm install
 cd packages/dsh-ssh
-node --test test/*.test.js                     # 单测（基线 295 fail=0）
+node --test test/*.test.js                     # 单测（基线 305 fail=0）
 node scripts/live-smoke.mjs                    # 冒烟（需配置测试远端）
 ```
 
